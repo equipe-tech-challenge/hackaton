@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: hackathon_pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hackathon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hackathon123}
+      POSTGRES_DB: ${POSTGRES_DB:-hackathon_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+      - ./pgvector/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hackathon} -d ${POSTGRES_DB:-hackathon_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ia-service:
+    build:
+      context: ./ia-service
+      dockerfile: Dockerfile
+    container_name: hackathon_ia_service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      POSTGRES_USER: ${POSTGRES_USER:-hackathon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hackathon123}
+      POSTGRES_DB: ${POSTGRES_DB:-hackathon_db}
+      POSTGRES_HOST: pgvector
+      POSTGRES_PORT: 5432
+      POSTGRES_CONNECTION_STRING: postgresql+psycopg://${POSTGRES_USER:-hackathon}:${POSTGRES_PASSWORD:-hackathon123}@pgvector:5432/${POSTGRES_DB:-hackathon_db}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Report Agent backend
+      REPORT_MODEL_BACKEND: ${REPORT_MODEL_BACKEND:-langchain}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-4-6}
+      # Fine-tuning — HuggingFace (opcional)
+      HUGGINGFACE_API_TOKEN: ${HUGGINGFACE_API_TOKEN:-}
+      HUGGINGFACE_ENDPOINT_URL: ${HUGGINGFACE_ENDPOINT_URL:-}
+      # Fine-tuning — local (opcional)
+      LOCAL_MODEL_PATH: ${LOCAL_MODEL_PATH:-}
+      BASE_MODEL_ID: ${BASE_MODEL_ID:-}
+    depends_on:
+      pgvector:
+        condition: service_healthy
+
+  report-api:
+    build:
+      context: ./report-api
+      dockerfile: Dockerfile
+    container_name: hackathon_report_api
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hackathon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hackathon123}
+      POSTGRES_DB: ${POSTGRES_DB:-hackathon_db}
+      POSTGRES_HOST: pgvector
+      POSTGRES_PORT: 5432
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      pgvector:
+        condition: service_healthy
+
+volumes:
+  pgvector_data:
+    driver: local

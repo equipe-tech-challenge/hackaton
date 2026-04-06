@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where mmdc:*)",
+      "Bash(npx --yes @mermaid-js/mermaid-cli --version)",
+      "Bash(npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -t dark -w 2000 -H 1400 --backgroundColor \"#0d1117\")",
+      "Bash(npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -t dark -w 2400 -H 1400 --backgroundColor \"#0d1117\")",
+      "Bash(npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -w 2200 -H 1400 --backgroundColor \"#0d1117\")",
+      "Bash(npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -w 3000 -H 1200 --backgroundColor \"#0d1117\")",
+      "Bash(npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.svg --backgroundColor \"#0d1117\")",
+      "Bash(npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png --scale 4 -w 1800 --backgroundColor \"#0d1117\")"
+    ]
+  }
+}
