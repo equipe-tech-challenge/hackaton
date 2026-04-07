@@ -46,7 +46,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Report Agent backend
       REPORT_MODEL_BACKEND: ${REPORT_MODEL_BACKEND:-langchain}
-      LLM_MODEL: ${LLM_MODEL:-claude-opus-4-6}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_VISION_MODEL: ${LLM_VISION_MODEL:-}
       # Fine-tuning — HuggingFace (opcional)
       HUGGINGFACE_API_TOKEN: ${HUGGINGFACE_API_TOKEN:-}
       HUGGINGFACE_ENDPOINT_URL: ${HUGGINGFACE_ENDPOINT_URL:-}

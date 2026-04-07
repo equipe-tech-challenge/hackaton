@@ -1,10 +1,11 @@
 """
 QA Agent — avalia qualidade e consistência do relatório gerado.
 Fase 1: verificações determinísticas (sem LLM).
-Fase 2: avaliação com OpenAI gpt-4o + JSON mode.
+Fase 2: avaliação com LLM (OpenAI/Groq) + parse JSON.
 """
 
 import json
+import re
 from openai import OpenAI
 from app.config import get_settings
 from app.utils.logger import get_logger
@@ -84,9 +85,10 @@ def run(extraction_result: dict, report: dict) -> dict:
 
     # ── Fase 2: avaliação com LLM ───────────────────────────────────
     settings = get_settings()
-    # max_retries=6: SDK faz backoff exponencial automático em 429/5xx,
-    # respeitando o header Retry-After retornado pela OpenAI.
-    client = OpenAI(api_key=settings.openai_api_key, max_retries=6)
+    client_kwargs = {"api_key": settings.openai_api_key, "max_retries": 6}
+    if settings.llm_base_url:
+        client_kwargs["base_url"] = settings.llm_base_url
+    client = OpenAI(**client_kwargs)
 
     prompt = f"""Avalie a qualidade deste relatório técnico de arquitetura de software.
 
@@ -102,18 +104,25 @@ Critérios de avaliação (pesos):
 - Coerência (20%): recomendações vinculadas a riscos identificados
 - Qualidade (10%): linguagem técnica, sem informações genéricas
 
-Retorne JSON com is_valid (boolean), completeness_score (0.0-1.0), issues_found (array de strings) e quality_notes (string)."""
+Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues_found (array de strings) e quality_notes (string). Sem texto adicional."""
 
-    logger.info("qa.llm_evaluation.start")
+    logger.info("qa.llm_evaluation.start", model=settings.llm_model)
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        qa = json.loads(response.choices[0].message.content)
+        create_kwargs = {
+            "model": settings.llm_model,
+            "max_tokens": 2048,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if not settings.llm_base_url:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        response = client.chat.completions.create(**create_kwargs)
+        raw = response.choices[0].message.content.strip()
+        # LLaMA pode retornar JSON dentro de fences
+        fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+        if fence:
+            raw = fence.group(1).strip()
+        qa = json.loads(raw)
     except Exception as e:
         # Falha no LLM de QA não bloqueia — assume válido com score conservador
         logger.warning("qa.llm_evaluation.failed", error=str(e))

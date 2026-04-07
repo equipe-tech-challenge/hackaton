@@ -1,9 +1,11 @@
 """
-Extraction Agent — usa OpenAI Vision (gpt-4o) para extrair
+Extraction Agent — usa LLM Vision para extrair
 componentes, relacionamentos e padrões arquiteturais do diagrama.
+Suporta OpenAI (gpt-4o) e Groq (llama-3.2-vision) via base_url configurável.
 """
 
 import json
+import re
 from openai import OpenAI, APIError
 from app.config import get_settings
 from app.utils.exceptions import ExtractionError
@@ -62,25 +64,36 @@ def run(ingestion_result: dict) -> dict:
         dict com status, components, relationships, patterns, raw_description
     """
     settings = get_settings()
-    # max_retries=6: SDK faz backoff exponencial automático em 429/5xx,
-    # respeitando o header Retry-After retornado pela OpenAI.
-    client = OpenAI(api_key=settings.openai_api_key, max_retries=6)
+    client_kwargs = {"api_key": settings.openai_api_key, "max_retries": 6}
+    if settings.llm_base_url:
+        client_kwargs["base_url"] = settings.llm_base_url
+    client = OpenAI(**client_kwargs)
 
-    logger.info("extraction.start", file_name=ingestion_result.get("file_name"))
+    vision_model = settings.llm_vision_model or settings.llm_model
+
+    logger.info("extraction.start", file_name=ingestion_result.get("file_name"), model=vision_model)
 
     messages = _build_messages(ingestion_result)
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=4096,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
+        create_kwargs = {
+            "model": vision_model,
+            "max_tokens": 4096,
+            "messages": messages,
+        }
+        # JSON mode só funciona com OpenAI; Groq/LLaMA não suportam
+        if not settings.llm_base_url:
+            create_kwargs["response_format"] = {"type": "json_object"}
+        response = client.chat.completions.create(**create_kwargs)
     except APIError as e:
-        raise ExtractionError(f"Erro na API OpenAI: {e}", step="extraction")
+        raise ExtractionError(f"Erro na API LLM: {e}", step="extraction")
 
     raw_text = response.choices[0].message.content.strip()
+
+    # LLaMA pode retornar JSON dentro de ```json ... ``` — limpar
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_text)
+    if fence_match:
+        raw_text = fence_match.group(1).strip()
 
     try:
         extracted = json.loads(raw_text)

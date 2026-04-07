@@ -99,12 +99,15 @@ Sumário: {meta.get('executive_summary', 'N/A')}""")
 
 def _build_enrichment(rag_context: dict, extraction_result: dict) -> str:
     settings = get_settings()
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        max_tokens=4096,
-        openai_api_key=settings.openai_api_key,
-        max_retries=6,  # backoff exponencial automático em 429/5xx
-    )
+    llm_kwargs = {
+        "model": settings.llm_model,
+        "max_tokens": 4096,
+        "openai_api_key": settings.openai_api_key,
+        "max_retries": 6,
+    }
+    if settings.llm_base_url:
+        llm_kwargs["openai_api_base"] = settings.llm_base_url
+    llm = ChatOpenAI(**llm_kwargs)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Você é um arquiteto de software sênior analisando um diagrama.
@@ -161,6 +164,12 @@ def run(analysis_id: str, extraction_result: dict, db=None) -> dict:
         "similar_analyses": [],
         "rag_enrichment": "",
     }
+
+    # Skip: Groq/outros não têm API de embeddings — RAG requer OpenAI embeddings
+    settings = get_settings()
+    if settings.llm_base_url:
+        logger.info("rag.skipped_no_embeddings", analysis_id=analysis_id, reason="llm_base_url configurado (Groq/outro)")
+        return _no_context
 
     # Skip rápido: se não há relatórios anteriores, não gasta chamadas OpenAI
     if db is not None and not _has_previous_reports(db):

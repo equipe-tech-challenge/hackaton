@@ -40,8 +40,10 @@ class Settings(BaseSettings):
     # Valores: "langchain" | "finetuned_api" | "finetuned_local"
     report_model_backend: str = "langchain"
 
-    # LLM — modelo usado pelo backend langchain
+    # LLM — modelo e endpoint configuráveis (suporta OpenAI, Groq, etc.)
     llm_model: str = "gpt-4o"
+    llm_base_url: str = ""          # vazio = OpenAI padrão; preenchido = Groq/outro
+    llm_vision_model: str = ""      # modelo para Vision; se vazio usa llm_model
 
     # Fine-tuning — HuggingFace Inference API
     huggingface_api_token: str = ""

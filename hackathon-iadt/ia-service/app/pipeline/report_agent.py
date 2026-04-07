@@ -81,12 +81,15 @@ def _run_with_langchain(
     rag_section = _build_rag_section(rag_result)
     has_rag = bool(rag_result and rag_result.get("has_context"))
 
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        max_tokens=8192,
-        openai_api_key=settings.openai_api_key,
-        max_retries=6,  # backoff exponencial automático em 429/5xx
-    )
+    llm_kwargs = {
+        "model": settings.llm_model,
+        "max_tokens": 8192,
+        "openai_api_key": settings.openai_api_key,
+        "max_retries": 6,
+    }
+    if settings.llm_base_url:
+        llm_kwargs["openai_api_base"] = settings.llm_base_url
+    llm = ChatOpenAI(**llm_kwargs)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Você é um arquiteto de software sênior gerando relatórios técnicos.
