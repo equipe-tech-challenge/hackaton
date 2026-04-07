@@ -1,8 +1,11 @@
 import asyncio
+import json
+import queue
 import threading
+import traceback
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
@@ -17,6 +20,8 @@ configure_logging()
 logger = get_logger(__name__)
 
 SUPPORTED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "pdf"}
+
+_SENTINEL = object()  # marca fim do stream
 
 
 def _start_sqs_consumer():
@@ -43,7 +48,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="IA Service — Hackathon FIAP",
-    description="Pipeline de análise de diagramas de arquitetura com Claude Vision e RAG.",
+    description="Pipeline de análise de diagramas de arquitetura com LLM Vision e RAG.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -106,6 +111,74 @@ async def analyze_diagram(
     except Exception as e:
         logger.error("analyze.unexpected_error", error=str(e))
         raise HTTPException(status_code=500, detail="Erro interno no pipeline de análise.")
+
+
+@app.post("/analyze/stream")
+async def analyze_diagram_stream(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint SSE — executa o pipeline e emite eventos a cada etapa.
+    Formato: text/event-stream com JSON por linha.
+    """
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tipo de arquivo não suportado: .{ext}. Aceitos: {', '.join(SUPPORTED_EXTENSIONS)}",
+        )
+
+    file_bytes = await file.read()
+    event_queue: queue.Queue = queue.Queue()
+
+    def _on_step(step: str, status: str, data: dict):
+        event_queue.put({"step": step, "status": status, "data": data})
+
+    def _run():
+        try:
+            run_pipeline(
+                db=db,
+                file_bytes=file_bytes,
+                file_name=file.filename,
+                on_step=_on_step,
+            )
+        except Exception as exc:
+            event_queue.put({
+                "step": "pipeline",
+                "status": "error",
+                "data": {
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            })
+        finally:
+            event_queue.put(_SENTINEL)
+
+    # Roda o pipeline em thread separada para não bloquear o event loop
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    async def _event_generator():
+        while True:
+            try:
+                event = await asyncio.get_event_loop().run_in_executor(
+                    None, event_queue.get, True, 300,  # timeout 5min
+                )
+            except queue.Empty:
+                break
+
+            if event is _SENTINEL:
+                break
+
+            yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/analyses/{analysis_id}/status")

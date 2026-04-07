@@ -66,17 +66,18 @@ def _validate_guardrails(result: dict, source_components: list) -> None:
 # Backend: LangChain (padrão)
 # ──────────────────────────────────────────────
 
+RISK_CATEGORIES = "SPOF, Segurança, Escalabilidade, Acoplamento, Observabilidade, Resiliência"
+
+
 def _run_with_langchain(
     extraction_result: dict,
-    risk_result: dict,
     rag_result: dict | None,
     settings,
 ) -> dict:
-    """Gera o relatório via LangChain + LLM configurado."""
+    """Gera o relatório (com riscos embutidos) via LangChain + LLM configurado."""
     components = extraction_result.get("components", [])
+    relationships = extraction_result.get("relationships", [])
     patterns = extraction_result.get("patterns", [])
-    risks = risk_result.get("risks", [])
-    severity = risk_result.get("severity_summary", {"high": 0, "medium": 0, "low": 0})
     rag_section = _build_rag_section(rag_result)
     has_rag = bool(rag_result and rag_result.get("has_context"))
 
@@ -84,38 +85,39 @@ def _run_with_langchain(
         model=settings.llm_model,
         max_tokens=8192,
         openai_api_key=settings.openai_api_key,
+        max_retries=6,  # backoff exponencial automático em 429/5xx
     )
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Você é um arquiteto de software sênior gerando relatórios técnicos.
 Baseie-se APENAS nos dados fornecidos. Não invente componentes ou riscos.
 Use linguagem técnica em português. Retorne APENAS JSON válido."""),
-        ("human", f"""Gere um relatório técnico com base nos dados abaixo:
+        ("human", f"""Gere um relatório técnico completo com base nos dados extraídos do diagrama:
 
 === COMPONENTES ===
 {json.dumps(components, ensure_ascii=False)}
 
+=== RELACIONAMENTOS ===
+{json.dumps(relationships, ensure_ascii=False)}
+
 === PADRÕES ARQUITETURAIS ===
 {json.dumps(patterns, ensure_ascii=False)}
 
-=== RISCOS IDENTIFICADOS ===
-{json.dumps(risks, ensure_ascii=False)}
-
-=== SEVERIDADE ===
-Alto: {severity.get('high', 0)} | Médio: {severity.get('medium', 0)} | Baixo: {severity.get('low', 0)}
-
 {rag_section}
+
+Analise os riscos arquiteturais nas categorias: {RISK_CATEGORIES}.
+Inclua apenas riscos reais identificados — cada risco deve referenciar ao menos um componente existente.
 
 Retorne JSON com exatamente estas chaves:
 {{
   "components_identified": ["lista de componentes"],
   "architectural_risks": [
     {{
-      "type": "tipo",
-      "description": "descrição",
+      "type": "uma das categorias: {RISK_CATEGORIES}",
+      "description": "descrição clara do problema",
       "severity": "ALTO|MÉDIO|BAIXO",
-      "affected_components": ["componentes"],
-      "mitigation": "mitigação"
+      "affected_components": ["componentes afetados"],
+      "mitigation": "recomendação de mitigação específica"
     }}
   ],
   "recommendations": ["lista de recomendações — use [RAG] nas influenciadas pelo contexto histórico"],
@@ -140,7 +142,6 @@ Retorne JSON com exatamente estas chaves:
 
 def _run_with_finetuned(
     extraction_result: dict,
-    risk_result: dict,
     rag_result: dict | None,
     settings,
 ) -> dict:
@@ -150,7 +151,7 @@ def _run_with_finetuned(
     client = get_report_client(settings)
 
     try:
-        result = client.generate_report(extraction_result, risk_result, rag_result)
+        result = client.generate_report(extraction_result, {}, rag_result)
     except Exception as exc:
         raise ReportGenerationError(
             f"Erro ao gerar relatório via LLM fine-tunado: {exc}",
@@ -164,9 +165,9 @@ def _run_with_finetuned(
 # Interface pública
 # ──────────────────────────────────────────────
 
-def run(extraction_result: dict, risk_result: dict, rag_result: dict = None) -> dict:
+def run(extraction_result: dict, rag_result: dict = None) -> dict:
     """
-    Gera o relatório técnico estruturado.
+    Gera o relatório técnico estruturado com análise de riscos embutida.
 
     O backend é selecionado via REPORT_MODEL_BACKEND:
       "langchain"       → LangChain + LLM (padrão)
@@ -175,7 +176,6 @@ def run(extraction_result: dict, risk_result: dict, rag_result: dict = None) -> 
 
     Args:
         extraction_result: saída do extraction_agent
-        risk_result:       saída do risk_agent
         rag_result:        saída do rag_agent (opcional)
 
     Returns:
@@ -191,15 +191,14 @@ def run(extraction_result: dict, risk_result: dict, rag_result: dict = None) -> 
         "report.start",
         backend=backend,
         components=len(components),
-        risks=len(risk_result.get("risks", [])),
         rag=has_rag,
     )
 
     # ── Seleção de backend ─────────────────────────────────────────
     if backend == "langchain":
-        result = _run_with_langchain(extraction_result, risk_result, rag_result, settings)
+        result = _run_with_langchain(extraction_result, rag_result, settings)
     elif backend in ("finetuned_api", "finetuned_local"):
-        result = _run_with_finetuned(extraction_result, risk_result, rag_result, settings)
+        result = _run_with_finetuned(extraction_result, rag_result, settings)
     else:
         raise ReportGenerationError(
             f"REPORT_MODEL_BACKEND inválido: '{backend}'. "

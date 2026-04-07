@@ -103,6 +103,7 @@ def _build_enrichment(rag_context: dict, extraction_result: dict) -> str:
         model=settings.llm_model,
         max_tokens=4096,
         openai_api_key=settings.openai_api_key,
+        max_retries=6,  # backoff exponencial automático em 429/5xx
     )
 
     prompt = ChatPromptTemplate.from_messages([
@@ -141,11 +142,31 @@ PADRÕES ATUAIS: {patterns}"""),
     })
 
 
-def run(analysis_id: str, extraction_result: dict) -> dict:
+def _has_previous_reports(db) -> bool:
+    """Verifica se existem relatórios anteriores no banco (query leve, sem OpenAI)."""
+    from sqlalchemy import text
+    row = db.execute(text("SELECT 1 FROM reports LIMIT 1")).first()
+    return row is not None
+
+
+def run(analysis_id: str, extraction_result: dict, db=None) -> dict:
     """
     Indexa a extração atual e recupera contexto histórico.
     Não bloqueante — retorna has_context=False em caso de falha.
+    Pula chamadas OpenAI quando não há histórico no banco.
     """
+    _no_context = {
+        "analysis_id": analysis_id,
+        "has_context": False,
+        "similar_analyses": [],
+        "rag_enrichment": "",
+    }
+
+    # Skip rápido: se não há relatórios anteriores, não gasta chamadas OpenAI
+    if db is not None and not _has_previous_reports(db):
+        logger.info("rag.skipped_no_history", analysis_id=analysis_id)
+        return _no_context
+
     try:
         _index_analysis(analysis_id, extraction_result)
         rag_context = _retrieve_context(extraction_result, top_k=3)

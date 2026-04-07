@@ -57,6 +57,22 @@ services:
       pgvector:
         condition: service_healthy
 
+  streamlit-app:
+    build:
+      context: ./streamlit-app
+      dockerfile: Dockerfile
+    container_name: hackathon_streamlit
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      IA_SERVICE_URL: http://ia-service:8000
+      REPORT_API_URL: http://report-api:8001
+      REQUEST_TIMEOUT: "300"
+    depends_on:
+      - ia-service
+      - report-api
+
   report-api:
     build:
       context: ./report-api

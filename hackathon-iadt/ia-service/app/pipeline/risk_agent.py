@@ -30,7 +30,9 @@ def run(extraction_result: dict, rag_result: dict = None) -> dict:
         dict com status, risks[], severity_summary
     """
     settings = get_settings()
-    client = OpenAI(api_key=settings.openai_api_key)
+    # max_retries=6: SDK faz backoff exponencial automático em 429/5xx,
+    # respeitando o header Retry-After retornado pela OpenAI.
+    client = OpenAI(api_key=settings.openai_api_key, max_retries=6)
 
     components = extraction_result.get("components", [])
     relationships = extraction_result.get("relationships", [])
