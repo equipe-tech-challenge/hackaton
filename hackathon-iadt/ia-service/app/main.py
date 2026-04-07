@@ -116,11 +116,14 @@ async def analyze_diagram(
 @app.post("/analyze/stream")
 async def analyze_diagram_stream(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
 ):
     """
     Endpoint SSE — executa o pipeline e emite eventos a cada etapa.
     Formato: text/event-stream com JSON por linha.
+
+    Nota: não usa Depends(get_db) porque o pipeline roda em thread separada
+    e a sessão do FastAPI seria fechada antes do thread terminar.
+    A sessão é criada dentro do thread.
     """
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
     if ext not in SUPPORTED_EXTENSIONS:
@@ -130,17 +133,21 @@ async def analyze_diagram_stream(
         )
 
     file_bytes = await file.read()
+    file_name = file.filename
     event_queue: queue.Queue = queue.Queue()
 
     def _on_step(step: str, status: str, data: dict):
         event_queue.put({"step": step, "status": status, "data": data})
 
     def _run():
+        from app.db.connection import get_session_factory
+        SessionLocal = get_session_factory()
+        db = SessionLocal()
         try:
             run_pipeline(
                 db=db,
                 file_bytes=file_bytes,
-                file_name=file.filename,
+                file_name=file_name,
                 on_step=_on_step,
             )
         except Exception as exc:
@@ -154,6 +161,7 @@ async def analyze_diagram_stream(
                 },
             })
         finally:
+            db.close()
             event_queue.put(_SENTINEL)
 
     # Roda o pipeline em thread separada para não bloquear o event loop
