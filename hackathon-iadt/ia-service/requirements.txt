@@ -38,8 +38,10 @@ python-dotenv==1.0.1
 structlog==24.4.0
 python-multipart==0.0.20
 
-# Embeddings (OpenAI)
+# Embeddings (OpenAI + HuggingFace local fallback)
 openai==1.59.3
+langchain-huggingface==0.1.2
+sentence-transformers==3.3.1
 
 # Testes
 pytest==8.3.4

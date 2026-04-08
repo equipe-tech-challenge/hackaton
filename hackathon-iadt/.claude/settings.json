@@ -3,7 +3,26 @@
     "allow": [
       "WebFetch(domain:platform.openai.com)",
       "Bash(python generate-diagram.py)",
-      "Bash(npx playwright:*)"
+      "Bash(npx playwright:*)",
+      "Bash(git mv:*)",
+      "Bash(touch app/infrastructure/messaging/__init__.py app/infrastructure/http/__init__.py app/infrastructure/config/__init__.py)",
+      "Bash(git rm:*)",
+      "Bash(rmdir app/db)",
+      "Bash(rmdir app/utils)",
+      "Bash(find app:*)",
+      "Bash(git add:*)",
+      "Bash(python -c ':*)",
+      "Bash(grep -n \"@patch\" tests/*.py)",
+      "Bash(grep -n \"^class \" app/domain/diagram_analysis/*.py app/domain/report_generation/*.py app/domain/shared/*.py app/infrastructure/persistence/*.py app/infrastructure/llm/openai_adapter.py app/infrastructure/vector_store/pgvector_adapter.py app/application/ports/*.py)",
+      "Bash(sed -i 's/from app\\\\.domain\\\\.diagram_analysis\\\\.value_objects import DiagramFile, AnalysisStatus/from app.domain.diagram_analysis.diagram_file import DiagramFile\\\\nfrom app.domain.diagram_analysis.analysis_status import AnalysisStatus/g' app/application/use_cases/analyze_diagram.py)",
+      "Bash(sed -i 's/from app\\\\.domain\\\\.diagram_analysis\\\\.value_objects import DiagramFile/from app.domain.diagram_analysis.diagram_file import DiagramFile/g' app/application/ports/llm_port.py app/infrastructure/llm/openai_adapter.py)",
+      "Bash(sed -i 's/from app\\\\.domain\\\\.diagram_analysis\\\\.value_objects import AnalysisStatus/from app.domain.diagram_analysis.analysis_status import AnalysisStatus/g' app/infrastructure/persistence/sqlalchemy_analysis_repository.py)",
+      "Bash(ls app/domain/diagram_analysis/*.py)",
+      "Bash(ls app/domain/report_generation/*.py)",
+      "Bash(ls app/domain/shared/*.py)",
+      "Bash(sed -i 's/AnalysisCompleted\\(/AnalysisCompletedEvent\\(/g' app/domain/diagram_analysis/analysis.py)",
+      "Bash(sed -i 's/AnalysisFailed\\(/AnalysisFailedEvent\\(/g' app/domain/diagram_analysis/analysis.py)",
+      "Bash(docker --version)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"

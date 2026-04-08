@@ -6,10 +6,10 @@ Consulta um relatório pelo analysis_id.
 from __future__ import annotations
 from typing import Optional
 
-from app.domain.report.repository import IReportRepository
-from app.domain.analysis.repository import IAnalysisRepository
-from app.domain.shared.value_objects import AnalysisId
-from app.utils.logger import get_logger
+from app.domain.report_generation.repository import IReportRepository
+from app.domain.diagram_analysis.repository import IAnalysisRepository
+from app.domain.shared.analysis_id import AnalysisId
+from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
 

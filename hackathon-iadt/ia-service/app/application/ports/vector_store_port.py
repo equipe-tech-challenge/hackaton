@@ -5,9 +5,9 @@ Application Layer — Port para Vector Store (RAG).
 from __future__ import annotations
 from abc import ABC, abstractmethod
 
-from app.domain.analysis.entities import ExtractionResult
-from app.domain.report.value_objects import RagContext
-from app.domain.shared.value_objects import AnalysisId
+from app.domain.diagram_analysis.extraction_result import ExtractionResult
+from app.domain.report_generation.rag_context import RagContext
+from app.domain.shared.analysis_id import AnalysisId
 
 
 class IVectorStore(ABC):
@@ -18,6 +18,13 @@ class IVectorStore(ABC):
         """
         Indexa a extração atual no vector store para uso futuro.
         Non-blocking — falhas devem ser logadas, não propagadas.
+        """
+
+    @abstractmethod
+    def mark_as_reported(self, analysis_id: AnalysisId) -> None:
+        """
+        Marca o documento indexado como tendo relatório gerado,
+        tornando-o disponível para consultas RAG futuras.
         """
 
     @abstractmethod

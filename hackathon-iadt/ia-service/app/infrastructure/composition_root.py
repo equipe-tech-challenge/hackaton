@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.application.use_cases.analyze_diagram import AnalyzeDiagramUseCase
 from app.application.use_cases.retrieve_report import RetrieveReportUseCase
-from app.domain.report.services import GuardrailService
+from app.domain.report_generation.guardrail import GuardrailService
 
 from app.infrastructure.persistence.sqlalchemy_analysis_repository import (
     SQLAlchemyAnalysisRepository,
@@ -24,7 +24,7 @@ from app.infrastructure.persistence.sqlalchemy_analysis_repository import (
 from app.infrastructure.persistence.sqlalchemy_report_repository import (
     SQLAlchemyReportRepository,
 )
-from app.infrastructure.llm.openai_llm_adapter import (
+from app.infrastructure.llm.openai_adapter import (
     OpenAIVisionAdapter,
     OpenAITextAdapter,
 )

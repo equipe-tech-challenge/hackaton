@@ -10,11 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 
-from app.config import get_settings
-from app.utils.logger import configure_logging, get_logger
-from app.db.connection import get_db, check_db_connection
-from app.pipeline.orchestrator import run_pipeline
-from app.utils.exceptions import PipelineError
+from app.infrastructure.config.settings import get_settings
+from app.shared.logging import configure_logging, get_logger
+from app.infrastructure.persistence.database import get_db, check_db_connection
+from app.pipeline.analysis_orchestrator import run_pipeline
+from app.shared.exceptions import PipelineError
 
 configure_logging()
 logger = get_logger(__name__)
@@ -31,7 +31,7 @@ def _start_sqs_consumer():
         logger.info("sqs.consumer.disabled", reason="SQS_QUEUE_URL não configurado")
         return
 
-    from app.sqs_consumer import start as sqs_start
+    from app.infrastructure.messaging.sqs_consumer import start as sqs_start
 
     thread = threading.Thread(target=sqs_start, daemon=True, name="sqs-consumer")
     thread.start()
@@ -140,7 +140,7 @@ async def analyze_diagram_stream(
         event_queue.put({"step": step, "status": status, "data": data})
 
     def _run():
-        from app.db.connection import get_session_factory
+        from app.infrastructure.persistence.database import get_session_factory
         SessionLocal = get_session_factory()
         db = SessionLocal()
         try:
@@ -192,14 +192,15 @@ async def analyze_diagram_stream(
 @app.get("/analyses/{analysis_id}/status")
 def get_status(analysis_id: str, db: Session = Depends(get_db)):
     """Consulta o status de processamento de uma análise."""
-    from app.db.repositories import get_analysis
-    analysis = get_analysis(db, analysis_id)
+    from app.infrastructure.persistence.sqlalchemy_analysis_repository import SQLAlchemyAnalysisRepository
+    from app.domain.shared.analysis_id import AnalysisId
+    repo = SQLAlchemyAnalysisRepository(db)
+    analysis = repo.get_by_id(AnalysisId.from_string(analysis_id))
     if not analysis:
         raise HTTPException(status_code=404, detail="Análise não encontrada.")
     return {
         "analysis_id": analysis_id,
-        "status": analysis["status"],
-        "file_name": analysis["file_name"],
-        "created_at": str(analysis["created_at"]),
-        "error_message": analysis.get("error_message"),
+        "status": analysis.status.value,
+        "file_name": analysis.file_name,
+        "error_message": analysis.error_message,
     }

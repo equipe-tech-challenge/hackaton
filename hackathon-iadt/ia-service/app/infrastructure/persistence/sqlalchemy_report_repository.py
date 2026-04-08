@@ -10,12 +10,13 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.domain.report.aggregate import ReportAggregate
-from app.domain.report.repository import IReportRepository
-from app.domain.report.entities import TechnicalReport
-from app.domain.report.value_objects import QAScore
-from app.domain.shared.value_objects import AnalysisId, ReportId
-from app.utils.logger import get_logger
+from app.domain.report_generation.report import ReportAggregate
+from app.domain.report_generation.repository import IReportRepository
+from app.domain.report_generation.technical_report import TechnicalReport
+from app.domain.report_generation.qa_score import QAScore
+from app.domain.shared.analysis_id import AnalysisId
+from app.domain.shared.report_id import ReportId
+from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
 

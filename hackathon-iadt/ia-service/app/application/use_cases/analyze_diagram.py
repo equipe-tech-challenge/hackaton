@@ -14,24 +14,27 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
-from app.domain.analysis.aggregate import AnalysisAggregate
-from app.domain.analysis.value_objects import DiagramFile, AnalysisStatus
-from app.domain.analysis.entities import ExtractionResult
-from app.domain.analysis.repository import IAnalysisRepository
-from app.domain.report.aggregate import ReportAggregate
-from app.domain.report.entities import TechnicalReport
-from app.domain.report.value_objects import QAScore, RagContext
-from app.domain.report.services import GuardrailService
-from app.domain.report.repository import IReportRepository
-from app.domain.shared.value_objects import AnalysisId, ReportId
+from app.domain.diagram_analysis.analysis import AnalysisAggregate
+from app.domain.diagram_analysis.diagram_file import DiagramFile
+from app.domain.diagram_analysis.analysis_status import AnalysisStatus
+from app.domain.diagram_analysis.extraction_result import ExtractionResult
+from app.domain.diagram_analysis.repository import IAnalysisRepository
+from app.domain.report_generation.report import ReportAggregate
+from app.domain.report_generation.technical_report import TechnicalReport
+from app.domain.report_generation.qa_score import QAScore
+from app.domain.report_generation.rag_context import RagContext
+from app.domain.report_generation.guardrail import GuardrailService
+from app.domain.report_generation.repository import IReportRepository
+from app.domain.shared.analysis_id import AnalysisId
+from app.domain.shared.report_id import ReportId
 
 from app.application.ports.llm_port import IVisionLLM, ITextLLM
 from app.application.ports.vector_store_port import IVectorStore
 
-from app.utils.exceptions import (
+from app.shared.exceptions import (
     IngestionError, QAError, RAGError,
 )
-from app.utils.logger import get_logger
+from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -197,6 +200,12 @@ class AnalyzeDiagramUseCase:
             analysis.complete(qa_score.completeness_score)
             self._analysis_repo.update_status(analysis)
 
+            # Marca no vector store para que futuras consultas RAG o encontrem
+            try:
+                self._vector_store.mark_as_reported(analysis_id)
+            except Exception as e:
+                log.warning("pipeline.mark_as_reported_failed", error=str(e))
+
             log.info("use_case.analyze_diagram.done", qa_score=qa_score.completeness_score)
 
             result = {
@@ -253,7 +262,7 @@ class AnalyzeDiagramUseCase:
         log,
     ) -> QAScore:
         """Avalia qualidade com fase determinística antes do LLM."""
-        from app.domain.report.value_objects import QAScore
+        from app.domain.report_generation.qa_score import QAScore
 
         # Fase 1: Verificações determinísticas (sem LLM)
         issues = self._deterministic_qa_checks(extraction, report)

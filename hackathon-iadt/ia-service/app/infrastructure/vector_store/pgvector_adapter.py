@@ -8,6 +8,7 @@ from typing import Optional
 
 from langchain_postgres import PGVector
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -15,28 +16,39 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.application.ports.vector_store_port import IVectorStore
-from app.domain.analysis.entities import ExtractionResult
-from app.domain.report.value_objects import RagContext
-from app.domain.shared.value_objects import AnalysisId
-from app.config import get_settings
-from app.utils.exceptions import RAGError
-from app.utils.logger import get_logger
+from app.domain.diagram_analysis.extraction_result import ExtractionResult
+from app.domain.report_generation.rag_context import RagContext
+from app.domain.shared.analysis_id import AnalysisId
+from app.infrastructure.config.settings import get_settings
+from app.shared.exceptions import RAGError
+from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
 _vector_store_instance: Optional[PGVector] = None
 
 
+def _build_embeddings():
+    """Retorna OpenAI embeddings se disponível, senão HuggingFace local."""
+    settings = get_settings()
+    if settings.llm_base_url:
+        logger.info("vector_store.embeddings", backend="huggingface-local")
+        return HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+        )
+    logger.info("vector_store.embeddings", backend="openai")
+    return OpenAIEmbeddings(
+        model="text-embedding-3-small",
+        openai_api_key=settings.openai_api_key,
+    )
+
+
 def _get_pgvector() -> PGVector:
     global _vector_store_instance
     if _vector_store_instance is None:
         settings = get_settings()
-        embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small",
-            openai_api_key=settings.openai_api_key,
-        )
         _vector_store_instance = PGVector(
-            embeddings=embeddings,
+            embeddings=_build_embeddings(),
             collection_name="diagram_analyses",
             connection=settings.postgres_connection_string,
             use_jsonb=True,
@@ -54,14 +66,6 @@ class PGVectorAdapter(IVectorStore):
         self._db = db
 
     def index(self, analysis_id: AnalysisId, extraction: ExtractionResult) -> None:
-        settings = get_settings()
-        if settings.llm_base_url:
-            logger.info(
-                "vector_store.index.skipped",
-                reason="Groq/base_url — sem API de embeddings",
-            )
-            return
-
         store = _get_pgvector()
         page_content = (
             f"Diagrama de Arquitetura:\n{extraction.raw_description}\n\n"
@@ -81,15 +85,23 @@ class PGVectorAdapter(IVectorStore):
         store.add_documents([doc], ids=[str(analysis_id)])
         logger.info("vector_store.indexed", analysis_id=str(analysis_id))
 
+    def mark_as_reported(self, analysis_id: AnalysisId) -> None:
+        self._db.execute(
+            text("""
+                UPDATE langchain_pg_embedding
+                SET cmetadata = cmetadata || '{"has_report": true}'::jsonb
+                WHERE cmetadata->>'analysis_id' = :aid
+            """),
+            {"aid": str(analysis_id)},
+        )
+        self._db.commit()
+        logger.info("vector_store.marked_as_reported", analysis_id=str(analysis_id))
+
     def retrieve_context(
         self,
         extraction: ExtractionResult,
         exclude_analysis_id: AnalysisId,
     ) -> RagContext:
-        settings = get_settings()
-        if settings.llm_base_url:
-            return RagContext.empty()
-
         # Skip rápido se não há relatórios anteriores
         if not self._has_previous_reports():
             logger.info("vector_store.retrieve.skipped_no_history")

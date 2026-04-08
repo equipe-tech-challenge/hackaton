@@ -10,11 +10,11 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.domain.analysis.aggregate import AnalysisAggregate
-from app.domain.analysis.repository import IAnalysisRepository
-from app.domain.analysis.value_objects import AnalysisStatus
-from app.domain.shared.value_objects import AnalysisId
-from app.utils.logger import get_logger
+from app.domain.diagram_analysis.analysis import AnalysisAggregate
+from app.domain.diagram_analysis.repository import IAnalysisRepository
+from app.domain.diagram_analysis.analysis_status import AnalysisStatus
+from app.domain.shared.analysis_id import AnalysisId
+from app.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
