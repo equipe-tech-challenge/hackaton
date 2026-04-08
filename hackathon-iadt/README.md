@@ -8,19 +8,23 @@ Sistema de análise automatizada de diagramas de arquitetura de software. Recebe
 
 1. [Visão Geral](#1-visão-geral)
 2. [Arquitetura](#2-arquitetura)
-3. [Componentes](#3-componentes)
-4. [Pipeline de IA — 6 Agentes](#4-pipeline-de-ia--6-agentes)
-5. [RAG com pgvector](#5-rag-com-pgvector)
-6. [Guardrails e Controle de Qualidade](#6-guardrails-e-controle-de-qualidade)
-7. [Webhook de Devolutiva](#7-webhook-de-devolutiva)
-8. [Fine-Tuning](#8-fine-tuning)
-9. [Schema do Banco de Dados](#9-schema-do-banco-de-dados)
-10. [Configuração de Ambiente](#10-configuração-de-ambiente)
-11. [Execução](#11-execução)
-12. [API Reference](#12-api-reference)
-13. [Testes](#13-testes)
-14. [Segurança](#14-segurança)
-15. [Limitações e Decisões de Projeto](#15-limitações-e-decisões-de-projeto)
+3. [Arquitetura Hexagonal (Ports & Adapters)](#3-arquitetura-hexagonal-ports--adapters)
+4. [Componentes do Sistema](#4-componentes-do-sistema)
+5. [SQS Consumer — Arquitetura Event-Driven](#5-sqs-consumer--arquitetura-event-driven)
+6. [Pipeline de IA — 6 Agentes](#6-pipeline-de-ia--6-agentes)
+7. [RAG com pgvector](#7-rag-com-pgvector)
+8. [Guardrails e Controle de Qualidade](#8-guardrails-e-controle-de-qualidade)
+9. [Estratégia de Convergência do Pipeline](#9-estratégia-de-convergência-do-pipeline)
+10. [Webhook de Devolutiva](#10-webhook-de-devolutiva)
+11. [Fine-Tuning](#11-fine-tuning)
+12. [Schema do Banco de Dados](#12-schema-do-banco-de-dados)
+13. [Configuração de Ambiente](#13-configuração-de-ambiente)
+14. [Execução](#14-execução)
+15. [API Reference](#15-api-reference)
+16. [Streamlit — Interface de Validação](#16-streamlit--interface-de-validação)
+17. [Testes](#17-testes)
+18. [Segurança](#18-segurança)
+19. [Limitações e Decisões de Projeto](#19-limitações-e-decisões-de-projeto)
 
 ---
 
@@ -106,9 +110,175 @@ O time **SOAT** é responsável pelo API Gateway, serviço de upload, publicaç�
 
 ---
 
-## 3. Componentes
+## 3. Arquitetura Hexagonal (Ports & Adapters)
 
-### 3.1 ia-service
+O `ia-service` adota **Arquitetura Hexagonal** (Ports & Adapters) como padrão arquitetural. Dentro da camada de domínio, aplica **modelagem tática DDD** (agregados, value objects, domain events) para expressar as regras de negócio. A distinção é importante: a arquitetura hexagonal organiza *como as camadas se comunicam*; DDD modela *o problema de negócio dentro do domínio*.
+
+### 3.1 Camadas da Arquitetura
+
+```
+                    ┌──────────────────────────────────────────────────────┐
+                    │              INFRASTRUCTURE (Adapters)               │
+                    │                                                      │
+                    │  OpenAIVisionAdapter    SQLAlchemy*Repository        │
+                    │  OpenAITextAdapter      PGVectorAdapter              │
+                    │                                                      │
+                    │    ┌──────────────────────────────────────────┐      │
+                    │    │          APPLICATION (Use Cases + Ports)  │      │
+                    │    │                                          │      │
+                    │    │  AnalyzeDiagramUseCase                   │      │
+                    │    │  RetrieveReportUseCase                   │      │
+                    │    │                                          │      │
+                    │    │  Ports: IVisionLLM · ITextLLM            │      │
+                    │    │         IVectorStore                     │      │
+                    │    │         IAnalysisRepository              │      │
+                    │    │         IReportRepository                │      │
+                    │    │                                          │      │
+                    │    │    ┌──────────────────────────────┐      │      │
+                    │    │    │     DOMAIN (Modelo Tático)   │      │      │
+                    │    │    │                              │      │      │
+                    │    │    │  AnalysisAggregate           │      │      │
+                    │    │    │  ReportAggregate             │      │      │
+                    │    │    │  GuardrailService            │      │      │
+                    │    │    │  Value Objects · Events      │      │      │
+                    │    │    └──────────────────────────────┘      │      │
+                    │    └──────────────────────────────────────────┘      │
+                    └──────────────────────────────────────────────────────┘
+```
+
+**Regra de dependência:** as setas apontam para dentro. Infrastructure depende de Application, que depende de Domain. Domain não importa nada externo.
+
+### 3.2 Portas (Interfaces — Camada Application)
+
+As portas definem *o que* a aplicação precisa, sem saber *como* será implementado.
+
+**Arquivo:** `application/ports/llm_port.py`
+
+```python
+class IVisionLLM(ABC):
+    def extract_components(self, diagram_file: DiagramFile) -> ExtractionResult: ...
+
+class ITextLLM(ABC):
+    def generate_report(self, extraction, rag_context) -> TechnicalReport: ...
+    def evaluate_quality(self, extraction, report) -> QAScore: ...
+```
+
+**Arquivo:** `application/ports/vector_store_port.py`
+
+```python
+class IVectorStore(ABC):
+    def index(self, analysis_id, extraction) -> None: ...
+    def retrieve_context(self, extraction, exclude_analysis_id) -> RagContext: ...
+```
+
+### 3.3 Adaptadores (Implementações — Camada Infrastructure)
+
+| Porta | Adaptador | Tecnologia |
+|---|---|---|
+| `IVisionLLM` | `OpenAIVisionAdapter` | OpenAI SDK / Groq (via `base_url`) |
+| `ITextLLM` | `OpenAITextAdapter` | LangChain chains + OpenAI/Groq |
+| `IVectorStore` | `PGVectorAdapter` | LangChain PGVector + `text-embedding-3-small` |
+| `IAnalysisRepository` | `SQLAlchemyAnalysisRepository` | SQLAlchemy + PostgreSQL |
+| `IReportRepository` | `SQLAlchemyReportRepository` | SQLAlchemy + PostgreSQL |
+
+**Trocar de provider de LLM** (ex: OpenAI → Anthropic) significa criar um novo adapter que implemente `IVisionLLM` / `ITextLLM`. O domínio e os use cases permanecem intactos.
+
+### 3.4 Composition Root (Injeção de Dependências)
+
+**Arquivo:** `infrastructure/composition_root.py`
+
+Ponto único de montagem do grafo de dependências. Nenhuma outra camada conhece as implementações concretas.
+
+```python
+def build_analyze_use_case(db: Session) -> AnalyzeDiagramUseCase:
+    return AnalyzeDiagramUseCase(
+        analysis_repo=SQLAlchemyAnalysisRepository(db),
+        report_repo=SQLAlchemyReportRepository(db),
+        vision_llm=OpenAIVisionAdapter(),
+        text_llm=OpenAITextAdapter(),
+        vector_store=PGVectorAdapter(db),
+        guardrail_svc=GuardrailService(),
+    )
+```
+
+### 3.5 Modelagem Tática DDD (Camada Domain)
+
+Dentro da camada de domínio, o problema é modelado com padrões táticos DDD:
+
+#### Bounded Contexts
+
+| Contexto | Responsabilidade | Agregado |
+|---|---|---|
+| **Analysis** | Ciclo de vida da análise (recebimento → processamento → conclusão/erro) | `AnalysisAggregate` |
+| **Report** | Geração, validação e persistência do relatório técnico | `ReportAggregate` |
+
+#### AnalysisAggregate — Máquina de Estados
+
+```
+RECEIVED ──start_ingestion()──▶ PROCESSING ──complete()──▶ ANALYZED
+                                     │
+                                     └──fail()──▶ ERROR
+```
+
+**Invariantes protegidas pelo agregado:**
+- Um diagrama só pode ser processado a partir do estado `RECEIVED`
+- A extração só pode acontecer após a ingestão
+- O pipeline só pode completar após extração bem-sucedida
+- Qualquer etapa pode transitar para `ERROR`
+
+#### Value Objects
+
+| Value Object | Contexto | Descrição |
+|---|---|---|
+| `DiagramFile` | Analysis | Arquivo validado (tipo, tamanho, base64) — imutável |
+| `Component`, `Relationship`, `ArchitecturalPattern` | Analysis | Elementos extraídos do diagrama |
+| `AnalysisId`, `ReportId` | Shared | UUIDs tipados |
+| `RiskItem` | Report | Risco categorizado com severidade e mitigação |
+| `Recommendation` | Report | Recomendação com flag `[RAG]` de origem histórica |
+| `QAScore` | Report | Score de qualidade + issues encontradas |
+| `RagContext` | Report | Contexto histórico recuperado do pgvector |
+
+#### Domain Events
+
+O agregado emite eventos a cada transição de estado (padrão outbox):
+
+```python
+aggregate.pull_events()  # Retorna e limpa eventos pendentes
+```
+
+| Evento | Quando emitido |
+|---|---|
+| `DiagramReceived` | Análise criada |
+| `DiagramIngested` | Arquivo validado e convertido para base64 |
+| `ComponentsExtracted` | LLM Vision extraiu componentes |
+| `AnalysisCompleted` | Pipeline finalizou com sucesso |
+| `AnalysisFailed` | Qualquer etapa falhou |
+| `ReportGenerated` | Relatório técnico gerado |
+| `QAValidationCompleted` | QA executado (aprovado ou rejeitado) |
+
+#### Domain Service — GuardrailService
+
+**Arquivo:** `domain/report/services.py`
+
+Encapsula as regras de validação que não pertencem a nenhuma entidade:
+
+```python
+class GuardrailService:
+    HALLUCINATION_THRESHOLD = 0.20  # Max 20% de componentes inventados
+    MIN_SUMMARY_LENGTH = 100        # Mínimo de caracteres no sumário
+
+    def validate(self, report, extraction) -> None:
+        self._check_components_not_empty(report)
+        self._check_hallucination(report, extraction)
+        self._check_recommendations_not_empty(report)
+        self._check_summary_length(report)
+```
+
+---
+
+## 4. Componentes do Sistema
+
+### 4.1 ia-service
 
 Serviço principal. Responsável pelo pipeline de IA, consumer SQS e webhook.
 
@@ -121,6 +291,42 @@ ia-service/
     ├── config.py                # Settings via pydantic-settings
     ├── webhook.py               # Envio de resultado via HTTP POST
     ├── sqs_consumer.py          # Consumer SQS com graceful shutdown
+    │
+    ├── domain/                  # Camada de Domínio (DDD)
+    │   ├── analysis/            # Bounded Context: Analysis
+    │   │   ├── aggregate.py     # AnalysisAggregate (máquina de estados)
+    │   │   ├── entities.py      # ExtractionResult
+    │   │   ├── value_objects.py # DiagramFile, Component, AnalysisStatus
+    │   │   ├── events.py        # DiagramReceived, ComponentsExtracted...
+    │   │   └── repository.py    # IAnalysisRepository (interface)
+    │   ├── report/              # Bounded Context: Report
+    │   │   ├── aggregate.py     # ReportAggregate
+    │   │   ├── entities.py      # TechnicalReport
+    │   │   ├── value_objects.py # RiskItem, QAScore, RagContext
+    │   │   ├── services.py      # GuardrailService
+    │   │   ├── events.py        # ReportGenerated, QAValidationCompleted
+    │   │   └── repository.py    # IReportRepository (interface)
+    │   └── shared/              # Value Objects compartilhados
+    │       ├── value_objects.py # AnalysisId, ReportId
+    │       └── events.py        # DomainEvent (base)
+    │
+    ├── application/             # Camada de Aplicação (Use Cases + Ports)
+    │   ├── ports/
+    │   │   ├── llm_port.py      # IVisionLLM, ITextLLM
+    │   │   └── vector_store_port.py # IVectorStore
+    │   └── use_cases/
+    │       ├── analyze_diagram.py   # AnalyzeDiagramUseCase
+    │       └── retrieve_report.py   # RetrieveReportUseCase
+    │
+    ├── infrastructure/          # Camada de Infraestrutura (Adapters)
+    │   ├── composition_root.py  # Injeção de dependências
+    │   ├── llm/
+    │   │   └── openai_llm_adapter.py  # OpenAIVisionAdapter, OpenAITextAdapter
+    │   ├── vector_store/
+    │   │   └── pgvector_adapter.py    # PGVectorAdapter
+    │   └── persistence/
+    │       ├── sqlalchemy_analysis_repository.py
+    │       └── sqlalchemy_report_repository.py
     │
     ├── pipeline/
     │   ├── orchestrator.py      # Coordena os 6 agentes
@@ -147,7 +353,7 @@ ia-service/
         └── logger.py            # Structured logging (JSON via structlog)
 ```
 
-### 3.2 report-api
+### 4.2 report-api
 
 API read-only para consulta de relatórios gerados. Usada pelo API Gateway do time SOAT.
 
@@ -159,7 +365,7 @@ API read-only para consulta de relatórios gerados. Usada pelo API Gateway do ti
 | `GET` | `/reports/{analysis_id}` | Relatório completo de uma análise |
 | `GET` | `/reports?limit=20&offset=0` | Lista paginada de análises |
 
-### 3.3 pgvector
+### 4.3 pgvector
 
 PostgreSQL 16 com extensão `pgvector`. Armazena:
 - Estado de cada análise (`analyses`)
@@ -169,7 +375,62 @@ PostgreSQL 16 com extensão `pgvector`. Armazena:
 
 ---
 
-## 4. Pipeline de IA — 6 Agentes
+## 5. SQS Consumer — Arquitetura Event-Driven
+
+**Arquivo:** `ia-service/app/sqs_consumer.py`
+
+O `ia-service` opera como **consumer de uma fila SQS** publicada pelo time SOAT. O consumer roda como **thread daemon** iniciada no startup do FastAPI, sem bloquear o event loop HTTP.
+
+### Fluxo de Processamento
+
+```
+SQS Queue
+   │
+   ▼  long polling (20s)
+┌──────────────────────────────────────────────────────────────┐
+│  Consumer Thread                                             │
+│                                                              │
+│  receive_message(MaxMessages=5, VisibilityTimeout=300s)      │
+│       │                                                      │
+│       ├── Idempotência: sqs_message_id já existe? → skip     │
+│       │                                                      │
+│       ├── Poison pill: ApproximateReceiveCount > 3? → warning│
+│       │                                                      │
+│       ├── Download S3: retry 3x (backoff 2s → 4s → 8s)      │
+│       │                                                      │
+│       ├── run_pipeline(file_bytes, file_name)                │
+│       │                                                      │
+│       ├── delete_message() ← somente após sucesso            │
+│       │                                                      │
+│       └── send_webhook(callback_url, result)                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Mensagem SQS esperada
+
+```json
+{
+  "file_name":    "diagrama.png",
+  "s3_url":       "https://s3.amazonaws.com/...",
+  "callback_url": "https://soat-api.example.com/webhook"
+}
+```
+
+### Resiliência do Consumer
+
+| Mecanismo | Implementação |
+|---|---|
+| **Long polling** | `WaitTimeSeconds=20` — reduz chamadas vazias à API SQS |
+| **Idempotência** | `sqs_message_id` com constraint `UNIQUE` no banco — mensagens duplicadas são ignoradas |
+| **Graceful shutdown** | Handlers de `SIGTERM`/`SIGINT` — finaliza a mensagem atual antes de parar |
+| **Poison pill detection** | Loga warning quando `ApproximateReceiveCount > 3` |
+| **Download com retry** | `tenacity`: 3 tentativas, backoff exponencial (2s → 4s → 8s), retenta em timeout/network error |
+| **Visibility timeout** | 300s (5 min) — mensagem não processada volta à fila automaticamente |
+| **Webhook non-blocking** | Falha no webhook não impede deleção da mensagem — resultado já está no banco |
+
+---
+
+## 6. Pipeline de IA — 6 Agentes
 
 O pipeline é **sequencial**, gerenciado pelo `orchestrator.py`. Cada agente recebe a saída do anterior e produz um resultado estruturado.
 
@@ -234,11 +495,10 @@ Usa um **LLM com capacidade Vision** para interpretar o diagrama visualmente e e
 > **Não usa OCR.** O arquivo (imagem ou PDF) é enviado diretamente para o LLM como conteúdo multimodal. O modelo interpreta o diagrama com compreensão semântica — lê setas, caixas, relacionamentos e padrões arquiteturais — sem necessidade de extração de texto intermediária.
 
 **Como funciona:**
-1. Monta um bloco multimodal com o arquivo em Base64
-2. Para imagens: `{type: "image", source: {type: "base64", data: "..."}}`
-3. Para PDFs: `{type: "document", source: {type: "base64", media_type: "application/pdf", data: "..."}}`
-4. Envia para o LLM com prompt de extração estruturada
-5. Parseia o JSON retornado e valida campos obrigatórios
+1. Monta um bloco multimodal com o arquivo em Base64 no formato OpenAI Vision: `{type: "image_url", image_url: {url: "data:{media_type};base64,..."}}`
+2. Envia para o LLM Vision com prompt de extração estruturada
+3. Ativa JSON mode quando disponível (OpenAI); faz fallback de markdown fences para Groq/LLaMA
+4. Parseia o JSON retornado e valida campos obrigatórios (`components`, `relationships`, `patterns`, `raw_description`)
 
 **Saída:**
 ```json
@@ -433,7 +693,7 @@ O output é forçado via `json_schema` estrito — o LLM é obrigado a retornar 
 
 ---
 
-## 5. RAG com pgvector
+## 7. RAG com pgvector
 
 O sistema aprende com análises anteriores. Quanto mais diagramas forem processados, mais rico fica o contexto histórico fornecido ao pipeline.
 
@@ -465,7 +725,7 @@ Apenas análises com similaridade alta (> 70%) são incluídas no contexto. Isso
 
 ---
 
-## 6. Guardrails e Controle de Qualidade
+## 8. Guardrails e Controle de Qualidade
 
 O sistema implementa múltiplas camadas de proteção contra alucinações e saídas inválidas:
 
@@ -482,7 +742,70 @@ O sistema implementa múltiplas camadas de proteção contra alucinações e sa�
 
 ---
 
-## 7. Webhook de Devolutiva
+## 9. Estratégia de Convergência do Pipeline
+
+O pipeline de 6 agentes precisa convergir de forma determinística para um resultado coerente, mesmo quando um LLM externo pode alucinar ou falhar. As seguintes estratégias garantem convergência:
+
+### Ground Truth — ExtractionResult como Âncora
+
+O `ExtractionResult` (saída do Agente 2) é a **fonte de verdade** para todo o pipeline. Todos os agentes subsequentes (RAG, Risk, Report, QA) recebem a extração original e são validados contra ela:
+
+```
+ExtractionResult (ground truth)
+     │
+     ├──▶ RAG Agent:    busca similares no histórico baseado na extração
+     ├──▶ Risk Agent:   analisa riscos dos componentes extraídos
+     ├──▶ Report Agent: gera relatório e valida grounding contra extração
+     └──▶ QA Agent:     valida 80% overlap entre relatório e extração
+```
+
+### Mecanismos de Convergência
+
+| Mecanismo | Onde | Como garante convergência |
+|---|---|---|
+| **Pipeline sequencial** | Orchestrator | Cada agente recebe output do anterior — sem execução paralela, sem race conditions |
+| **Grounding check (20%)** | GuardrailService | Max 20% dos componentes do relatório podem ser inventados — o resto deve existir na extração |
+| **Grounding duplo (80%)** | QA Agent Fase 1 | ≥ 80% dos componentes do relatório devem existir na extração original |
+| **Recálculo server-side** | Risk Agent | `severity_summary` é recalculado no servidor — não confia no LLM para somar |
+| **RAG non-blocking** | Use Case | Falha no RAG retorna `RagContext.empty()` — pipeline continua sem enriquecimento |
+| **QA fallback** | Use Case | Se LLM de QA indisponível, assume score conservador 0.7 (desde que Fase 1 tenha passado) |
+| **JSON Schema estrito** | QA Agent Fase 2 | `json_schema` obriga o LLM a retornar formato correto — sem outputs livres |
+| **Score mínimo** | QA Agent | Score < 0.6 = relatório rejeitado (`is_valid: false`) |
+| **Transparência RAG** | Report Agent | Recomendações de origem histórica marcadas com `[RAG]` — rastreabilidade |
+
+### Diagrama de Convergência
+
+```
+[Ingestion]  →  VALIDA formato/tamanho
+                    │ falha → IngestionError (bloqueia)
+                    ▼
+[Extraction] →  EXTRAI ground truth
+                    │ falha → ExtractionError (bloqueia)
+                    ▼
+[RAG]        →  ENRIQUECE com histórico
+                    │ falha → RagContext.empty() (continua ✓)
+                    ▼
+[Risk]       →  CLASSIFICA riscos + RECALCULA severidade server-side
+                    │ falha → RiskAnalysisError (bloqueia)
+                    ▼
+[Report]     →  GERA relatório + GUARDRAIL grounding ≤ 20%
+                    │ falha → ReportGenerationError (bloqueia)
+                    ▼
+[QA Fase 1]  →  VERIFICA: campos, completude, grounding ≥ 80%
+                    │ falha → is_valid=false (rejeita imediatamente)
+                    ▼
+[QA Fase 2]  →  AVALIA: completude 30%, consistência 40%, coerência 20%, qualidade 10%
+                    │ falha LLM → score=0.7 (fallback conservador ✓)
+                    │ score < 0.6 → rejeitado
+                    ▼
+[Persistência + Webhook]
+```
+
+**Resultado:** o pipeline *sempre* converge para um dos dois estados: `analisado` (com relatório válido) ou `erro` (com mensagem descritiva). Nunca fica em estado intermediário indefinidamente.
+
+---
+
+## 10. Webhook de Devolutiva
 
 Após o pipeline concluir (sucesso ou erro), o serviço envia o resultado via HTTP POST para o `callback_url` informado na mensagem SQS.
 
@@ -530,7 +853,7 @@ Tentativa 3 → falha → loga erro → pipeline continua
 
 ---
 
-## 8. Fine-Tuning
+## 11. Fine-Tuning
 
 O módulo de fine-tuning treina um LLM open-source com QLoRA para gerar relatórios no formato exato exigido pelo pipeline — como alternativa ao LLM principal.
 
@@ -619,7 +942,7 @@ HUGGINGFACE_ENDPOINT_URL=https://api-inference.huggingface.co/models/seu-usuario
 
 ---
 
-## 9. Schema do Banco de Dados
+## 12. Schema do Banco de Dados
 
 ```sql
 -- Ciclo de vida de cada análise
@@ -669,7 +992,7 @@ CREATE TABLE reports (
 
 ---
 
-## 10. Configuração de Ambiente
+## 13. Configuração de Ambiente
 
 Copie o arquivo de exemplo e preencha as variáveis:
 
@@ -691,7 +1014,7 @@ cp ia-service/.env.example ia-service/.env
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `REPORT_MODEL_BACKEND` | `langchain` | Backend do report agent |
-| `LLM_MODEL` | `claude-opus-4-6` | Modelo LLM para o backend langchain |
+| `LLM_MODEL` | `gpt-4o` | Modelo LLM para o backend langchain |
 | `HUGGINGFACE_API_TOKEN` | — | Token HuggingFace (para `finetuned_api`) |
 | `HUGGINGFACE_ENDPOINT_URL` | — | URL do endpoint HuggingFace |
 | `LOCAL_MODEL_PATH` | — | Caminho do adapter local (para `finetuned_local`) |
@@ -700,7 +1023,7 @@ cp ia-service/.env.example ia-service/.env
 
 ---
 
-## 11. Execução
+## 14. Execução
 
 ### Subir todos os serviços
 
@@ -749,21 +1072,9 @@ curl "http://localhost:8001/reports?limit=10&offset=0"
 curl http://localhost:8000/analyses/{analysis_id}/status
 ```
 
-### Simular mensagem SQS localmente
-
-```bash
-aws --endpoint-url=http://localhost:4566 sqs send-message \
-  --queue-url http://localhost:4566/000000000000/hackathon-queue \
-  --message-body '{
-    "file_name": "diagrama.png",
-    "s3_url": "https://s3.amazonaws.com/bucket/diagrama.png",
-    "callback_url": "https://webhook.site/seu-token"
-  }'
-```
-
 ---
 
-## 12. API Reference
+## 15. API Reference
 
 ### ia-service (:8000)
 
@@ -867,7 +1178,83 @@ curl -X POST http://localhost:8000/analyze \
 
 ---
 
-## 13. Testes
+## 16. Streamlit — Interface de Validação
+
+**Arquivo:** `streamlit-app/app.py`
+
+O Streamlit serve como **interface visual de validação** do pipeline, permitindo testar a análise de diagramas sem depender da integração SQS/SOAT. Opera de forma independente do consumer — consome o endpoint HTTP `POST /analyze/stream` diretamente.
+
+### Por que Streamlit?
+
+- **Prototipagem rápida:** nativo Python, sem necessidade de frontend separado (React, Vue)
+- **Ideal para hackathon:** interface funcional com ~340 linhas de código
+- **SSE nativo:** `httpx.Client.stream()` consome eventos em tempo real
+- **Componentes prontos:** file uploader, expanders, metrics, download buttons
+
+### Fluxo de Interação
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Streamlit App (:8501)                                   │
+│                                                          │
+│  1. Usuário faz upload (drag & drop / file picker)       │
+│       │                                                  │
+│  2. Preview do diagrama (se imagem)                      │
+│       │                                                  │
+│  3. Clica "Analisar Diagrama"                            │
+│       │                                                  │
+│  4. POST /analyze/stream ──▶ ia-service (:8000)          │
+│       │                                                  │
+│  5. Consome SSE em tempo real:                           │
+│       │  ⏳ Ingestão — Processando...                    │
+│       │  ✅ Ingestão (0.1s) — PNG, 512 KB                │
+│       │  ⏳ Extração — Processando...                    │
+│       │  ✅ Extração (3.2s) — 8 componentes, 5 relações  │
+│       │  ✅ RAG (0.5s) — 2 análises similares            │
+│       │  ✅ Relatório (4.1s) — 3 riscos, 5 recomendações │
+│       │  ✅ QA (1.8s) — Score 92% — aprovado             │
+│       │                                                  │
+│  6. Renderiza relatório completo:                        │
+│       ├── Resumo Executivo                               │
+│       ├── Componentes (grid 3 colunas)                   │
+│       ├── Riscos (expanders com badges 🔴🟡🟢)           │
+│       ├── Recomendações (🔗 = RAG, ➡️ = original)        │
+│       ├── Score QA (metric widget)                       │
+│       └── Download JSON (botão)                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### SSE (Server-Sent Events) — Streaming em Tempo Real
+
+O `ia-service` emite eventos SSE durante o pipeline via `StreamingResponse` do FastAPI:
+
+```
+data: {"step": "ingestion", "status": "running", "data": {}}
+
+data: {"step": "ingestion", "status": "done", "data": {"file_type": "png", "file_size_kb": 512, "elapsed": 0.1}}
+
+data: {"step": "extraction", "status": "running", "data": {}}
+
+data: {"step": "extraction", "status": "done", "data": {"components_count": 8, "elapsed": 3.2}}
+```
+
+O Streamlit consome esses eventos via `httpx.Client.stream()` e atualiza a UI incrementalmente usando `st.empty()` para redesenhar os passos sem flickering.
+
+### Sidebar — Monitoramento
+
+- **Health check:** verifica conectividade do `ia-service` (GET /health)
+- **Histórico:** lista últimas 10 análises via `report-api` (GET /reports)
+- **Pipeline visual:** diagrama simplificado das etapas
+
+### Tratamento de Erros
+
+- **Erro no pipeline:** exibe a etapa que falhou com ícone ❌ e mensagem
+- **Stack trace do servidor:** capturado via campo `traceback` do evento SSE e exibido em expander
+- **Stack trace local:** traceback Python do Streamlit exibido separadamente
+
+---
+
+## 17. Testes
 
 ### Executar testes unitários
 
@@ -892,9 +1279,53 @@ pytest tests/ --cov=app --cov-report=term-missing
 | `test_risk.py` | Classificação de severidade, recálculo de summary, erros de API |
 | `test_qa.py` | Verificações básicas, grounding, score mínimo, fallback |
 
+### Testes E2E com Playwright
+
+O diretório `tests/e2e/` contém **7 specs E2E** escritos em TypeScript com Playwright, cobrindo o fluxo completo da aplicação.
+
+**Specs disponíveis:**
+
+| Spec | O que valida |
+|---|---|
+| `health-check.spec.ts` | Endpoints /health do ia-service e report-api |
+| `upload-flow.spec.ts` | Upload de arquivo e início da análise |
+| `sse-pipeline.spec.ts` | Streaming SSE com progresso de cada agente |
+| `report-display.spec.ts` | Renderização do relatório no Streamlit |
+| `error-scenarios.spec.ts` | Comportamento com arquivos inválidos |
+| `report-api.spec.ts` | Endpoints REST do report-api |
+| `history.spec.ts` | Histórico e paginação de análises |
+
+**Helpers reutilizáveis:**
+- `api-client.ts` — cliente HTTP para ia-service e report-api
+- `sse-client.ts` — consumer de Server-Sent Events
+- `selectors.ts` — seletores CSS do Streamlit
+
+**Executar:**
+
+```bash
+cd tests/e2e
+npm install
+npx playwright test                # todos os testes
+npx playwright test upload-flow    # teste específico
+npx playwright test --ui           # modo visual interativo
+npm run report                     # relatório HTML
+```
+
+**Scripts npm disponíveis:**
+
+```bash
+npm run test:health     # health check
+npm run test:upload     # upload flow
+npm run test:sse        # SSE pipeline
+npm run test:report     # report display
+npm run test:errors     # cenários de erro
+npm run test:api        # report API
+npm run test:history    # histórico
+```
+
 ---
 
-## 14. Segurança
+## 18. Segurança
 
 ### Validação de entrada
 
@@ -933,7 +1364,7 @@ pytest tests/ --cov=app --cov-report=term-missing
 
 ---
 
-## 15. Limitações e Decisões de Projeto
+## 19. Limitações e Decisões de Projeto
 
 ### Por que não OCR?
 
