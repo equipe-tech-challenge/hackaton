@@ -27,12 +27,14 @@ from app.domain.report_generation.guardrail import GuardrailService
 from app.domain.report_generation.repository import IReportRepository
 from app.domain.shared.analysis_id import AnalysisId
 from app.domain.shared.report_id import ReportId
+from app.domain.shared.input_guardrail import InputGuardrailService
+from app.domain.shared.output_guardrail import OutputGuardrailService
 
 from app.application.ports.llm_port import IVisionLLM, ITextLLM
 from app.application.ports.vector_store_port import IVectorStore
 
 from app.shared.exceptions import (
-    IngestionError, QAError, RAGError,
+    IngestionError, QAError, RAGError, GuardrailError, ExtractionError,
 )
 from app.shared.logging import get_logger
 
@@ -63,6 +65,8 @@ class AnalyzeDiagramUseCase:
         text_llm: ITextLLM,
         vector_store: IVectorStore,
         guardrail_svc: Optional[GuardrailService] = None,
+        input_guardrail: Optional[InputGuardrailService] = None,
+        output_guardrail: Optional[OutputGuardrailService] = None,
     ):
         self._analysis_repo = analysis_repo
         self._report_repo = report_repo
@@ -70,6 +74,8 @@ class AnalyzeDiagramUseCase:
         self._text_llm = text_llm
         self._vector_store = vector_store
         self._guardrail = guardrail_svc or GuardrailService()
+        self._input_guardrail = input_guardrail or InputGuardrailService()
+        self._output_guardrail = output_guardrail or OutputGuardrailService()
 
     def execute(
         self,
@@ -105,6 +111,15 @@ class AnalyzeDiagramUseCase:
         log.info("use_case.analyze_diagram.start")
 
         try:
+            # ── Etapa 0: Input Guardrails ─────────────────────────
+            emit("input_guardrail", "running")
+            log.info("pipeline.step", step="input_guardrail")
+
+            file_name = self._input_guardrail.sanitize_filename(file_name)
+            self._input_guardrail.check_prompt_injection(file_name)
+
+            emit("input_guardrail", "done")
+
             # ── Etapa 1: Ingestão ──────────────────────────────────
             emit("ingestion", "running")
             t0 = time.time()
@@ -117,6 +132,40 @@ class AnalyzeDiagramUseCase:
             emit("ingestion", "done", {
                 "file_type": diagram_file.file_type.value,
                 "file_size_kb": diagram_file.file_size_kb,
+                "elapsed": round(time.time() - t0, 1),
+            })
+
+            # ── Etapa 1.5: Classificação da imagem ────────────────
+            emit("classification", "running")
+            t0 = time.time()
+            log.info("pipeline.step", step="classification")
+
+            classification = self._vision_llm.classify_image(diagram_file)
+            is_diagram = classification.get("is_architecture_diagram", False)
+            confidence = classification.get("confidence", 0.0)
+            reason = classification.get("reason", "")
+
+            if not is_diagram:
+                raise GuardrailError(
+                    f"Imagem rejeitada: não é um diagrama de arquitetura de software. "
+                    f"Motivo: {reason}",
+                    step="classification",
+                )
+
+            min_confidence = getattr(
+                self._vision_llm, "CLASSIFICATION_CONFIDENCE_THRESHOLD", 0.6
+            )
+            if confidence < min_confidence:
+                raise GuardrailError(
+                    f"Confiança insuficiente na classificação ({confidence:.0%}). "
+                    f"Mínimo: {min_confidence:.0%}. Motivo: {reason}",
+                    step="classification",
+                )
+
+            emit("classification", "done", {
+                "is_architecture_diagram": is_diagram,
+                "confidence": confidence,
+                "reason": reason,
                 "elapsed": round(time.time() - t0, 1),
             })
 
@@ -136,6 +185,12 @@ class AnalyzeDiagramUseCase:
                 "elapsed": round(time.time() - t0, 1),
             })
 
+            # ── Etapa 2.5: Validação dos dados extraídos ──────────
+            log.info("pipeline.step", step="input_guardrail_extraction")
+            extraction_data = extraction.to_dict()
+            self._input_guardrail.validate_extraction_data(extraction_data)
+            self._input_guardrail.check_prompt_injection(extraction.raw_description)
+
             # ── Etapa 3: RAG (non-blocking) ────────────────────────
             emit("rag", "running")
             t0 = time.time()
@@ -149,51 +204,82 @@ class AnalyzeDiagramUseCase:
                 "elapsed": round(time.time() - t0, 1),
             })
 
-            # ── Etapa 4: Geração de Relatório ──────────────────────
-            emit("report", "running")
-            t0 = time.time()
-            log.info("pipeline.step", step="report")
+            # ── Etapas 4+5: Geração de Relatório com loop de refinamento ──
+            MAX_REFINEMENT_ATTEMPTS = 2
+            feedback: list[str] | None = None
+            report = None
+            report_aggregate = None
+            qa_score = None
 
-            report = self._text_llm.generate_report(extraction, rag_context)
-            self._guardrail.validate(report, extraction)
+            for attempt in range(1, MAX_REFINEMENT_ATTEMPTS + 1):
+                is_refinement = attempt > 1
+                emit("report", "running", {"attempt": attempt, "is_refinement": is_refinement})
+                t0 = time.time()
+                log.info("pipeline.step", step="report", attempt=attempt, is_refinement=is_refinement)
 
-            report_aggregate = ReportAggregate.create(
-                report_id=ReportId.generate(),
-                analysis_id=analysis_id,
-            )
-            report_aggregate.attach_report(report)
+                report = self._text_llm.generate_report(extraction, rag_context, feedback=feedback)
 
-            severity = report.risk_severity_summary
-            emit("report", "done", {
-                "components_count": len(report.components_identified),
-                "risks_count": len(report.architectural_risks),
-                "severity": severity,
-                "recommendations_count": len(report.recommendations),
-                "rag_used": report.rag_used,
-                "elapsed": round(time.time() - t0, 1),
-            })
+                # Output guardrails: schema, conteúdo proibido, PII
+                sanitized_report_dict = self._output_guardrail.validate_output(report.to_dict())
+                report = TechnicalReport.from_dict(sanitized_report_dict)
 
-            # ── Etapa 5: QA ────────────────────────────────────────
-            emit("qa", "running")
-            t0 = time.time()
-            log.info("pipeline.step", step="qa")
+                self._guardrail.validate(report, extraction)
 
-            qa_score = self._evaluate_quality(extraction, report, log)
-            report_aggregate.attach_qa(qa_score)
-
-            if not qa_score.is_valid:
-                raise QAError(
-                    f"Relatório rejeitado pelo QA: {qa_score.issues_found}",
-                    step="qa",
-                    analysis_id=str(analysis_id),
+                report_aggregate = ReportAggregate.create(
+                    report_id=ReportId.generate(),
+                    analysis_id=analysis_id,
                 )
+                report_aggregate.attach_report(report)
 
-            emit("qa", "done", {
-                "is_valid": qa_score.is_valid,
-                "completeness_score": qa_score.completeness_score,
-                "issues_count": len(qa_score.issues_found),
-                "elapsed": round(time.time() - t0, 1),
-            })
+                severity = report.risk_severity_summary
+                emit("report", "done", {
+                    "components_count": len(report.components_identified),
+                    "risks_count": len(report.architectural_risks),
+                    "severity": severity,
+                    "recommendations_count": len(report.recommendations),
+                    "rag_used": report.rag_used,
+                    "attempt": attempt,
+                    "elapsed": round(time.time() - t0, 1),
+                })
+
+                # ── QA desta tentativa ──────────────────────────────
+                emit("qa", "running", {"attempt": attempt})
+                t0 = time.time()
+                log.info("pipeline.step", step="qa", attempt=attempt)
+
+                qa_score = self._evaluate_quality(extraction, report, log)
+                report_aggregate.attach_qa(qa_score)
+
+                emit("qa", "done", {
+                    "is_valid": qa_score.is_valid,
+                    "completeness_score": qa_score.completeness_score,
+                    "issues_count": len(qa_score.issues_found),
+                    "attempt": attempt,
+                    "elapsed": round(time.time() - t0, 1),
+                })
+
+                if qa_score.is_valid:
+                    break
+
+                if attempt < MAX_REFINEMENT_ATTEMPTS:
+                    feedback = qa_score.issues_found
+                    log.warning(
+                        "pipeline.qa_rejected.refinement",
+                        attempt=attempt,
+                        issues=feedback,
+                    )
+                    emit("qa", "refinement", {
+                        "attempt": attempt,
+                        "issues": feedback,
+                        "next_attempt": attempt + 1,
+                    })
+                else:
+                    raise QAError(
+                        f"Relatório rejeitado pelo QA após {MAX_REFINEMENT_ATTEMPTS} tentativas: "
+                        f"{qa_score.issues_found}",
+                        step="qa",
+                        analysis_id=str(analysis_id),
+                    )
 
             # ── Persistência final ─────────────────────────────────
             self._report_repo.save(report_aggregate)
@@ -211,7 +297,7 @@ class AnalyzeDiagramUseCase:
             result = {
                 "analysis_id": str(analysis_id),
                 "status": AnalysisStatus.ANALYZED.value,
-                "report": report.to_dict(),
+                "report": self._output_guardrail.redact_dict(report.to_dict()),
                 "qa": qa_score.to_dict(),
             }
             emit("done", "complete", result)

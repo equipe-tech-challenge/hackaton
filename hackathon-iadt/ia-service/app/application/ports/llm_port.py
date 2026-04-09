@@ -18,6 +18,16 @@ class IVisionLLM(ABC):
     """Port para extração de componentes via LLM com capacidade de visão."""
 
     @abstractmethod
+    def classify_image(self, diagram_file: DiagramFile) -> dict:
+        """
+        Classifica se a imagem é um diagrama de arquitetura de software.
+        Retorna dict com:
+          - is_architecture_diagram: bool
+          - confidence: float (0.0-1.0)
+          - reason: str
+        """
+
+    @abstractmethod
     def extract_components(self, diagram_file: DiagramFile) -> ExtractionResult:
         """
         Analisa a imagem do diagrama e extrai componentes, relacionamentos e padrões.
@@ -33,9 +43,11 @@ class ITextLLM(ABC):
         self,
         extraction: ExtractionResult,
         rag_context: RagContext,
+        feedback: list[str] | None = None,
     ) -> TechnicalReport:
         """
         Gera o relatório técnico com análise de riscos.
+        feedback: lista de issues do QA de uma tentativa anterior (loop de refinamento).
         Levanta ReportGenerationError em caso de falha.
         """
 

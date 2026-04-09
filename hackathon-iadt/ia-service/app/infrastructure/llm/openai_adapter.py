@@ -47,6 +47,29 @@ Retorne JSON com exatamente estas chaves:
 }"""
 
 
+_CLASSIFICATION_PROMPT = """Analise esta imagem e determine se ela é um diagrama de arquitetura de software.
+
+Critérios para ser um diagrama de arquitetura de software:
+- Contém componentes técnicos como serviços, APIs, bancos de dados, filas, load balancers, containers, microserviços
+- Mostra relacionamentos/fluxos entre componentes (setas, linhas de conexão)
+- Representa uma arquitetura de sistema (cloud, rede, aplicação, infraestrutura, deployment)
+- Exemplos válidos: diagramas de microserviços, diagramas C4, diagramas de deployment AWS/Azure/GCP, diagramas de fluxo de dados, diagramas de rede, diagramas UML de componentes/deployment
+
+NÃO é um diagrama de arquitetura de software:
+- Fotos, selfies, memes, screenshots de chat
+- Diagramas de outros domínios (biologia, química, organogramas RH)
+- Textos, documentos, planilhas
+- Fluxogramas de negócio sem componentes técnicos
+- Wireframes ou mockups de UI
+
+Retorne APENAS JSON:
+{
+  "is_architecture_diagram": true/false,
+  "confidence": 0.0 a 1.0,
+  "reason": "explicação curta em português"
+}"""
+
+
 def _strip_json_fence(text: str) -> str:
     """Remove markdown code fences que LLaMA pode retornar."""
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
@@ -55,6 +78,66 @@ def _strip_json_fence(text: str) -> str:
 
 class OpenAIVisionAdapter(IVisionLLM):
     """Extrai componentes de diagramas usando LLM com capacidade de visão."""
+
+    CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.6
+
+    def classify_image(self, diagram_file: DiagramFile) -> dict:
+        """Classifica se a imagem é um diagrama de arquitetura de software."""
+        settings = get_settings()
+        client_kwargs = {"api_key": settings.openai_api_key, "max_retries": 6}
+        if settings.llm_base_url:
+            client_kwargs["base_url"] = settings.llm_base_url
+        client = OpenAI(**client_kwargs)
+
+        vision_model = settings.llm_vision_model or settings.llm_model
+        logger.info("vision_llm.classify.start", model=vision_model)
+
+        messages = [
+            {
+                "role": "system",
+                "content": "Você é um classificador de imagens especializado em identificar diagramas de arquitetura de software. Retorne APENAS JSON válido.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{diagram_file.media_type};base64,{diagram_file.content_base64}"
+                        },
+                    },
+                    {"type": "text", "text": _CLASSIFICATION_PROMPT},
+                ],
+            },
+        ]
+
+        create_kwargs = {
+            "model": vision_model,
+            "max_tokens": 256,
+            "messages": messages,
+        }
+        if not settings.llm_base_url:
+            create_kwargs["response_format"] = {"type": "json_object"}
+
+        try:
+            response = client.chat.completions.create(**create_kwargs)
+            raw = _strip_json_fence(response.choices[0].message.content)
+            result = json.loads(raw)
+        except Exception as e:
+            logger.warning("vision_llm.classify.failed", error=str(e))
+            # Em caso de falha na classificação, assume válido para não bloquear
+            return {
+                "is_architecture_diagram": True,
+                "confidence": 0.5,
+                "reason": f"Classificação indisponível: {e}. Prosseguindo com análise.",
+            }
+
+        logger.info(
+            "vision_llm.classify.done",
+            is_diagram=result.get("is_architecture_diagram"),
+            confidence=result.get("confidence"),
+        )
+        return result
 
     def extract_components(self, diagram_file: DiagramFile) -> ExtractionResult:
         settings = get_settings()
@@ -126,6 +209,7 @@ class OpenAITextAdapter(ITextLLM):
         self,
         extraction: ExtractionResult,
         rag_context: RagContext,
+        feedback: list[str] | None = None,
     ) -> TechnicalReport:
         settings = get_settings()
 
@@ -138,6 +222,18 @@ Identifique com [RAG] as recomendações influenciadas por este contexto histór
 """
             if rag_context.has_context and rag_context.enrichment_text
             else "Sem contexto histórico disponível para esta análise."
+        )
+
+        feedback_section = (
+            f"""
+=== PROBLEMAS IDENTIFICADOS NA TENTATIVA ANTERIOR (CORRIJA OBRIGATORIAMENTE) ===
+Uma versão anterior deste relatório foi rejeitada pelo auditor de qualidade pelos seguintes motivos:
+{chr(10).join(f"- {issue}" for issue in feedback)}
+
+Corrija TODOS os problemas listados acima. Não repita os mesmos erros.
+"""
+            if feedback
+            else ""
         )
 
         llm_kwargs = {
@@ -170,7 +266,7 @@ IMPORTANTE: TODAS as chaves do JSON são OBRIGATÓRIAS. Nunca omita nenhuma chav
 {json.dumps([str(p) for p in extraction.patterns], ensure_ascii=False)}
 
 {rag_section}
-
+{feedback_section}
 Analise os riscos arquiteturais nas categorias: {risk_categories}.
 Inclua apenas riscos reais identificados — cada risco deve referenciar ao menos um componente existente.
 
@@ -206,6 +302,7 @@ Retorne JSON com exatamente estas chaves (TODAS obrigatórias):
             "text_llm.generate_report.done",
             components=len(result_dict.get("components_identified", [])),
             rag_used=has_rag,
+            is_refinement=bool(feedback),
         )
         return TechnicalReport.from_dict(result_dict)
 
@@ -220,21 +317,39 @@ Retorne JSON com exatamente estas chaves (TODAS obrigatórias):
             client_kwargs["base_url"] = settings.llm_base_url
         client = OpenAI(**client_kwargs)
 
-        prompt = f"""Avalie a qualidade deste relatório técnico de arquitetura de software.
+        system_prompt = """Você é um auditor técnico adversarial. Seu papel é encontrar falhas, inconsistências e generalizações em relatórios de arquitetura de software.
 
-COMPONENTES DA EXTRAÇÃO ORIGINAL (ground truth):
+Regras que você DEVE seguir:
+- Seja cético por padrão. Nunca assuma que o relatório está correto sem verificar cada afirmação.
+- Marque como problema qualquer componente no relatório que NÃO esteja explicitamente na extração original.
+- Marque como problema recomendações genéricas que não referenciam componentes concretos do diagrama.
+- Marque como problema riscos sem componentes afetados identificados.
+- Marque como problema linguagem vaga como "considere melhorar", "pode ser otimizado" sem especificações.
+- NÃO dê crédito por campos preenchidos com conteúdo irrelevante ou copiado.
+- Seu score deve refletir rigor real: um relatório mediocre não passa de 0.7, mesmo sem erros graves.
+- is_valid só deve ser true se o relatório for genuinamente útil para um arquiteto de software tomar decisões."""
+
+        prompt = f"""Audite criticamente este relatório técnico de arquitetura de software.
+
+COMPONENTES DA EXTRAÇÃO ORIGINAL (ground truth — única fonte de verdade):
 {json.dumps(extraction.component_names, ensure_ascii=False)}
 
-RELATÓRIO GERADO:
+RELATÓRIO A AUDITAR:
 {json.dumps(report.to_dict(), ensure_ascii=False, indent=2)}
 
 Critérios de avaliação (pesos):
-- Completude (30%): todos os campos obrigatórios preenchidos e não-vazios
-- Consistência (40%): componentes e riscos batem com a extração original
-- Coerência (20%): recomendações vinculadas a riscos identificados
-- Qualidade (10%): linguagem técnica, sem informações genéricas
+- Consistência (40%): cada componente, risco e recomendação deve referenciar elementos reais da extração original
+- Completude (30%): todos os campos obrigatórios preenchidos com conteúdo substantivo (não genérico)
+- Coerência (20%): cada recomendação deve estar vinculada a um risco identificado e a componentes concretos
+- Qualidade (10%): linguagem técnica precisa, sem clichês como "considere adotar boas práticas"
 
-Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues_found (array de strings) e quality_notes (string). Sem texto adicional."""
+Procure ativamente por:
+1. Componentes inventados que não existem na extração
+2. Riscos genéricos sem componentes afetados específicos
+3. Recomendações desvinculadas dos riscos identificados
+4. Sumário executivo que não reflete os dados extraídos
+
+Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues_found (array de strings descrevendo cada problema encontrado) e quality_notes (string). Sem texto adicional."""
 
         logger.info("text_llm.evaluate_quality.start", model=settings.llm_model)
 
@@ -242,7 +357,10 @@ Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues
             create_kwargs = {
                 "model": settings.llm_model,
                 "max_tokens": 2048,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
             }
             if not settings.llm_base_url:
                 create_kwargs["response_format"] = {"type": "json_object"}

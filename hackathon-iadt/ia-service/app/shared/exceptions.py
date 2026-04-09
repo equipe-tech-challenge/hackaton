@@ -26,5 +26,9 @@ class QAError(PipelineError):
     """Falha no qa-agent ou relatório rejeitado pelo QA."""
 
 
+class GuardrailError(PipelineError):
+    """Falha nos guardrails de entrada ou saída (prompt injection, PII, schema)."""
+
+
 class RAGError(Exception):
     """Falha no rag-agent — não bloqueia o pipeline."""

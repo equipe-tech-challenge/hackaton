@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 from app.application.use_cases.analyze_diagram import AnalyzeDiagramUseCase
 from app.application.use_cases.retrieve_report import RetrieveReportUseCase
 from app.domain.report_generation.guardrail import GuardrailService
+from app.domain.shared.input_guardrail import InputGuardrailService
+from app.domain.shared.output_guardrail import OutputGuardrailService
 
 from app.infrastructure.persistence.sqlalchemy_analysis_repository import (
     SQLAlchemyAnalysisRepository,
@@ -43,6 +45,8 @@ def build_analyze_use_case(db: Session) -> AnalyzeDiagramUseCase:
         text_llm=OpenAITextAdapter(),
         vector_store=PGVectorAdapter(db),
         guardrail_svc=GuardrailService(),
+        input_guardrail=InputGuardrailService(),
+        output_guardrail=OutputGuardrailService(),
     )
 
 

@@ -90,21 +90,39 @@ def run(extraction_result: dict, report: dict) -> dict:
         client_kwargs["base_url"] = settings.llm_base_url
     client = OpenAI(**client_kwargs)
 
-    prompt = f"""Avalie a qualidade deste relatório técnico de arquitetura de software.
+    system_prompt = """Você é um auditor técnico adversarial. Seu papel é encontrar falhas, inconsistências e generalizações em relatórios de arquitetura de software.
 
-COMPONENTES DA EXTRAÇÃO ORIGINAL (ground truth):
+Regras que você DEVE seguir:
+- Seja cético por padrão. Nunca assuma que o relatório está correto sem verificar cada afirmação.
+- Marque como problema qualquer componente no relatório que NÃO esteja explicitamente na extração original.
+- Marque como problema recomendações genéricas que não referenciam componentes concretos do diagrama.
+- Marque como problema riscos sem componentes afetados identificados.
+- Marque como problema linguagem vaga como "considere melhorar", "pode ser otimizado" sem especificações.
+- NÃO dê crédito por campos preenchidos com conteúdo irrelevante ou copiado.
+- Seu score deve refletir rigor real: um relatório mediocre não passa de 0.7, mesmo sem erros graves.
+- is_valid só deve ser true se o relatório for genuinamente útil para um arquiteto de software tomar decisões."""
+
+    prompt = f"""Audite criticamente este relatório técnico de arquitetura de software.
+
+COMPONENTES DA EXTRAÇÃO ORIGINAL (ground truth — única fonte de verdade):
 {json.dumps(extraction_components, ensure_ascii=False)}
 
-RELATÓRIO GERADO:
+RELATÓRIO A AUDITAR:
 {json.dumps(report, ensure_ascii=False, indent=2)}
 
 Critérios de avaliação (pesos):
-- Completude (30%): todos os campos obrigatórios preenchidos e não-vazios
-- Consistência (40%): componentes e riscos batem com a extração original
-- Coerência (20%): recomendações vinculadas a riscos identificados
-- Qualidade (10%): linguagem técnica, sem informações genéricas
+- Consistência (40%): cada componente, risco e recomendação deve referenciar elementos reais da extração original
+- Completude (30%): todos os campos obrigatórios preenchidos com conteúdo substantivo (não genérico)
+- Coerência (20%): cada recomendação deve estar vinculada a um risco identificado e a componentes concretos
+- Qualidade (10%): linguagem técnica precisa, sem clichês como "considere adotar boas práticas"
 
-Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues_found (array de strings) e quality_notes (string). Sem texto adicional."""
+Procure ativamente por:
+1. Componentes inventados que não existem na extração
+2. Riscos genéricos sem componentes afetados específicos
+3. Recomendações desvinculadas dos riscos identificados
+4. Sumário executivo que não reflete os dados extraídos
+
+Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues_found (array de strings descrevendo cada problema encontrado) e quality_notes (string). Sem texto adicional."""
 
     logger.info("qa.llm_evaluation.start", model=settings.llm_model)
 
@@ -112,7 +130,10 @@ Retorne APENAS JSON com is_valid (boolean), completeness_score (0.0-1.0), issues
         create_kwargs = {
             "model": settings.llm_model,
             "max_tokens": 2048,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
         }
         if not settings.llm_base_url:
             create_kwargs["response_format"] = {"type": "json_object"}
