@@ -47,26 +47,40 @@ Retorne JSON com exatamente estas chaves:
 }"""
 
 
-_CLASSIFICATION_PROMPT = """Analise esta imagem e determine se ela é um diagrama de arquitetura de software.
+_CLASSIFICATION_PROMPT = """Você é um filtro rigoroso. Sua única função é determinar se esta imagem é CLARAMENTE um diagrama de arquitetura de software.
 
-Critérios para ser um diagrama de arquitetura de software:
-- Contém componentes técnicos como serviços, APIs, bancos de dados, filas, load balancers, containers, microserviços
-- Mostra relacionamentos/fluxos entre componentes (setas, linhas de conexão)
-- Representa uma arquitetura de sistema (cloud, rede, aplicação, infraestrutura, deployment)
-- Exemplos válidos: diagramas de microserviços, diagramas C4, diagramas de deployment AWS/Azure/GCP, diagramas de fluxo de dados, diagramas de rede, diagramas UML de componentes/deployment
+REGRA PRINCIPAL: Em caso de dúvida, classifique como false. Só aprove se tiver certeza.
 
-NÃO é um diagrama de arquitetura de software:
-- Fotos, selfies, memes, screenshots de chat
-- Diagramas de outros domínios (biologia, química, organogramas RH)
-- Textos, documentos, planilhas
-- Fluxogramas de negócio sem componentes técnicos
-- Wireframes ou mockups de UI
+Verifique em ordem:
+1. É um diagrama técnico (tem caixas, setas, símbolos de componentes)? Se não → false.
+2. Os componentes são de software/sistemas (serviços, APIs, bancos de dados, filas, containers, microserviços, load balancers, gateways, buckets, lambdas)? Se não → false.
+3. Mostra relacionamentos/fluxos entre esses componentes técnicos? Se não → false.
+4. Só então classifique como true.
+
+Exemplos que PASSAM (true):
+- Diagramas de microserviços com setas entre serviços
+- Diagramas C4 (contexto, container, componente)
+- Diagramas de deployment AWS/Azure/GCP com ícones de serviços cloud
+- Diagramas de fluxo de dados técnico entre sistemas
+- Diagramas UML de componentes ou deployment
+- Topologias de rede com servidores, roteadores, firewalls
+
+Exemplos que REPROVAM (false):
+- Fotos, selfies, memes, imagens naturais
+- Screenshots de aplicações, sites, chats ou dashboards
+- Wireframes ou mockups de UI/UX (mesmo com caixas e setas)
+- Fluxogramas de processo de negócio sem componentes técnicos
+- Organogramas de RH ou hierarquias de equipes
+- Diagramas de outros domínios: biologia, química, física, matemática
+- Apresentações de slides com texto e gráficos
+- Documentos, planilhas, tabelas
+- Diagramas de fluxo genéricos (BPMN de negócio puro, sem sistemas)
 
 Retorne APENAS JSON:
 {
   "is_architecture_diagram": true/false,
   "confidence": 0.0 a 1.0,
-  "reason": "explicação curta em português"
+  "reason": "explicação curta em português do critério decisivo"
 }"""
 
 
@@ -79,7 +93,7 @@ def _strip_json_fence(text: str) -> str:
 class OpenAIVisionAdapter(IVisionLLM):
     """Extrai componentes de diagramas usando LLM com capacidade de visão."""
 
-    CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.6
+    CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.75
 
     def classify_image(self, diagram_file: DiagramFile) -> dict:
         """Classifica se a imagem é um diagrama de arquitetura de software."""
@@ -95,7 +109,7 @@ class OpenAIVisionAdapter(IVisionLLM):
         messages = [
             {
                 "role": "system",
-                "content": "Você é um classificador de imagens especializado em identificar diagramas de arquitetura de software. Retorne APENAS JSON válido.",
+                "content": "Você é um filtro rigoroso de imagens. Rejeite tudo que não seja CLARAMENTE um diagrama de arquitetura de software. Quando em dúvida, rejeite. Retorne APENAS JSON válido.",
             },
             {
                 "role": "user",
@@ -103,7 +117,8 @@ class OpenAIVisionAdapter(IVisionLLM):
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:{diagram_file.media_type};base64,{diagram_file.content_base64}"
+                            "url": f"data:{diagram_file.media_type};base64,{diagram_file.content_base64}",
+                            "detail": "low",
                         },
                     },
                     {"type": "text", "text": _CLASSIFICATION_PROMPT},
@@ -113,7 +128,8 @@ class OpenAIVisionAdapter(IVisionLLM):
 
         create_kwargs = {
             "model": vision_model,
-            "max_tokens": 256,
+            "max_tokens": 300,
+            "temperature": 0,
             "messages": messages,
         }
         if not settings.llm_base_url:
@@ -125,10 +141,11 @@ class OpenAIVisionAdapter(IVisionLLM):
             result = json.loads(raw)
         except Exception as e:
             logger.warning("vision_llm.classify.failed", error=str(e))
-            # Em caso de falha na classificação, assume válido para não bloquear
+            # Em caso de falha na API de classificação, assume válido para não bloquear.
+            # confidence=1.0 para não disparar o threshold check — a extração rejeitará se não houver componentes.
             return {
                 "is_architecture_diagram": True,
-                "confidence": 0.5,
+                "confidence": 1.0,
                 "reason": f"Classificação indisponível: {e}. Prosseguindo com análise.",
             }
 

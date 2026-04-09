@@ -22,7 +22,9 @@
       "Bash(ls app/domain/shared/*.py)",
       "Bash(sed -i 's/AnalysisCompleted\\(/AnalysisCompletedEvent\\(/g' app/domain/diagram_analysis/analysis.py)",
       "Bash(sed -i 's/AnalysisFailed\\(/AnalysisFailedEvent\\(/g' app/domain/diagram_analysis/analysis.py)",
-      "Bash(docker --version)"
+      "Bash(docker --version)",
+      "Bash(python3 -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
+      "Bash(python docs/generate_architecture.py)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"

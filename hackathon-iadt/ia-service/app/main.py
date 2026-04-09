@@ -3,9 +3,8 @@ import json
 import queue
 import threading
 import traceback
-from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
@@ -59,15 +58,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-STATIC_DIR = Path(__file__).parent / "static"
-
-
-@app.get("/")
-def serve_frontend():
-    """Serve o front-end temporário para teste de upload direto."""
-    return FileResponse(STATIC_DIR / "index.html")
-
 
 @app.get("/health")
 def health_check():
