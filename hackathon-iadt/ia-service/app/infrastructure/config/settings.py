@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     local_model_path: str = ""
     base_model_id: str = ""
 
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

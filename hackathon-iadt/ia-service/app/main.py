@@ -3,11 +3,13 @@ import json
 import queue
 import threading
 import traceback
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
+
+import redis as redis_lib
 
 from app.infrastructure.config.settings import get_settings
 from app.shared.logging import configure_logging, get_logger
@@ -193,4 +195,131 @@ def get_status(analysis_id: str, db: Session = Depends(get_db)):
         "status": analysis.status.value,
         "file_name": analysis.file_name,
         "error_message": analysis.error_message,
+    }
+
+
+# ── Async endpoints (Celery + Redis) ──────────────────────────────
+
+
+@app.post("/analyze/async", status_code=202)
+async def analyze_diagram_async(
+    file: UploadFile = File(...),
+):
+    """
+    Submete um diagrama para análise assíncrona via Celery.
+    Retorna imediatamente com o job_id para acompanhamento.
+
+    Acompanhe o progresso via SSE: GET /jobs/{job_id}/events
+    Ou via polling: GET /jobs/{job_id}/status
+    """
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tipo de arquivo não suportado: .{ext}. Aceitos: {', '.join(SUPPORTED_EXTENSIONS)}",
+        )
+
+    file_bytes = await file.read()
+    file_name = file.filename
+
+    from app.infrastructure.celery.tasks import analyze_diagram_task
+
+    task = analyze_diagram_task.delay(file_bytes.hex(), file_name)
+
+    logger.info("analyze.async.submitted", job_id=task.id, file_name=file_name)
+
+    return {"job_id": task.id, "status": "recebido"}
+
+
+@app.get("/jobs/{job_id}/events")
+async def job_events_sse(
+    job_id: str,
+    last_index: int = Query(0, ge=0, description="Índice do último evento recebido (para reconexão)"),
+):
+    """
+    SSE endpoint — acompanha o progresso de um job em tempo real.
+
+    Fase 1 (catch-up): envia eventos já armazenados no Redis list.
+    Fase 2 (real-time): assina o canal Redis pub/sub para novos eventos.
+
+    Suporta reconexão: passe ?last_index=N para pular eventos já recebidos.
+    """
+    settings = get_settings()
+    r = redis_lib.from_url(settings.redis_url)
+    channel = f"job:{job_id}"
+    events_key = f"job:{job_id}:events"
+
+    async def _generate():
+        # Fase 1: catch-up — eventos já armazenados
+        stored = r.lrange(events_key, last_index, -1)
+        for raw in stored:
+            decoded = raw.decode() if isinstance(raw, bytes) else raw
+            yield f"data: {decoded}\n\n"
+            event = json.loads(decoded)
+            if event.get("step") == "done" or event.get("status") == "error":
+                return
+
+        # Fase 2: real-time — pub/sub para novos eventos
+        pubsub = r.pubsub()
+        pubsub.subscribe(channel)
+        try:
+            timeout_counter = 0
+            max_timeout = 300  # 5 minutos máximo de espera
+            while timeout_counter < max_timeout:
+                msg = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: pubsub.get_message(timeout=1.0)
+                )
+                if msg and msg["type"] == "message":
+                    timeout_counter = 0
+                    data = msg["data"].decode() if isinstance(msg["data"], bytes) else msg["data"]
+                    yield f"data: {data}\n\n"
+                    event = json.loads(data)
+                    if event.get("step") == "done" or event.get("status") == "error":
+                        break
+                else:
+                    timeout_counter += 1
+                await asyncio.sleep(0.1)
+        finally:
+            pubsub.unsubscribe(channel)
+            pubsub.close()
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/jobs/{job_id}/status")
+async def job_status(job_id: str):
+    """
+    Polling endpoint — retorna o último evento e status de um job.
+    Alternativa leve ao SSE para clientes que não suportam streaming.
+    """
+    settings = get_settings()
+    r = redis_lib.from_url(settings.redis_url)
+    events_key = f"job:{job_id}:events"
+
+    events_raw = r.lrange(events_key, 0, -1)
+
+    if not events_raw:
+        from app.infrastructure.celery.celery_app import celery_app
+
+        result = celery_app.AsyncResult(job_id)
+        return {
+            "job_id": job_id,
+            "finished": False,
+            "celery_state": result.state,
+            "total_events": 0,
+            "last_event": None,
+        }
+
+    last = json.loads(events_raw[-1])
+    finished = last.get("step") == "done" or last.get("status") == "error"
+
+    return {
+        "job_id": job_id,
+        "finished": finished,
+        "last_event": last,
+        "total_events": len(events_raw),
     }

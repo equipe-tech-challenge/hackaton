@@ -88,20 +88,35 @@ def _format_step_summary(step: str, data: dict) -> str:
     return ""
 
 
-def _stream_analysis(file_bytes: bytes, file_name: str, status_container):
-    """Consome SSE do ia-service e atualiza a UI em tempo real."""
+def _async_analysis(file_bytes: bytes, file_name: str, status_container):
+    """
+    Análise assíncrona em 2 fases:
+    Fase 1: submete o diagrama via POST /analyze/async → recebe job_id.
+    Fase 2: assina SSE via GET /jobs/{job_id}/events → acompanha progresso.
+    """
+    # ── Fase 1: Submit ──
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            f"{IA_SERVICE_URL}/analyze/async",
+            files={"file": (file_name, file_bytes)},
+        )
+        if resp.status_code != 202:
+            raise Exception(f"Erro ao submeter: {resp.status_code} - {resp.text}")
+        job = resp.json()
+        job_id = job["job_id"]
+
+    # ── Fase 2: Subscribe SSE ──
     result = None
     completed_steps = []
     current_step = None
 
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
         with client.stream(
-            "POST",
-            f"{IA_SERVICE_URL}/analyze/stream",
-            files={"file": (file_name, file_bytes)},
+            "GET",
+            f"{IA_SERVICE_URL}/jobs/{job_id}/events",
         ) as response:
             if response.status_code != 200:
-                raise Exception(f"Erro {response.status_code}")
+                raise Exception(f"Erro ao conectar SSE: {response.status_code}")
 
             buffer = ""
             for chunk in response.iter_text():
@@ -126,7 +141,6 @@ def _stream_analysis(file_bytes: bytes, file_name: str, status_container):
                             icon, label = STEP_LABELS.get(step, ("❌", step))
                             completed_steps.append(f"❌ **{label}** — {error_msg}")
                             _redraw_steps(status_container, completed_steps, None)
-                            # Preserva o traceback do servidor para exibir no Streamlit
                             exc = Exception(error_msg)
                             exc._server_traceback = server_tb
                             raise exc
@@ -301,7 +315,7 @@ if uploaded_file is not None:
                 start = time.time()
 
                 try:
-                    result = _stream_analysis(file_bytes, uploaded_file.name, step_display)
+                    result = _async_analysis(file_bytes, uploaded_file.name, step_display)
                     elapsed = time.time() - start
 
                     status.update(
