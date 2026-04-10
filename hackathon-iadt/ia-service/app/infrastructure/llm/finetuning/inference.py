@@ -15,64 +15,9 @@ import json
 from abc import ABC, abstractmethod
 
 from app.shared.logging import get_logger
+from app.infrastructure.llm.finetuning.prompts import SYSTEM_PROMPT, build_user_message
 
 logger = get_logger(__name__)
-
-# System prompt — deve ser idêntico ao usado em report_agent.py e data_formatter.py
-_SYSTEM_PROMPT = (
-    "Você é um arquiteto de software sênior gerando relatórios técnicos.\n"
-    "Baseie-se APENAS nos dados fornecidos. Não invente componentes ou riscos.\n"
-    "Use linguagem técnica em português. Retorne APENAS JSON válido."
-)
-
-
-def _build_user_message(extraction: dict, risks: dict, rag_result: dict | None) -> str:
-    """Constrói o prompt do usuário — espelha data_formatter.py e report_agent.py."""
-    components = extraction.get("components", [])
-    patterns = extraction.get("patterns", [])
-    risk_list = risks.get("risks", [])
-    severity = risks.get("severity_summary", {"high": 0, "medium": 0, "low": 0})
-    has_rag = bool(rag_result and rag_result.get("has_context") and rag_result.get("rag_enrichment"))
-
-    rag_section = (
-        f"=== CONTEXTO DE ARQUITETURAS SIMILARES (RAG) ===\n{rag_result['rag_enrichment']}\n"
-        "Identifique com [RAG] as recomendações influenciadas por este contexto histórico."
-        if has_rag
-        else "Sem contexto histórico disponível para esta análise."
-    )
-
-    return f"""Gere um relatório técnico com base nos dados abaixo:
-
-=== COMPONENTES ===
-{json.dumps(components, ensure_ascii=False)}
-
-=== PADRÕES ARQUITETURAIS ===
-{json.dumps(patterns, ensure_ascii=False)}
-
-=== RISCOS IDENTIFICADOS ===
-{json.dumps(risk_list, ensure_ascii=False)}
-
-=== SEVERIDADE ===
-Alto: {severity.get('high', 0)} | Médio: {severity.get('medium', 0)} | Baixo: {severity.get('low', 0)}
-
-{rag_section}
-
-Retorne JSON com exatamente estas chaves:
-{{
-  "components_identified": ["lista de componentes"],
-  "architectural_risks": [
-    {{
-      "type": "tipo",
-      "description": "descrição",
-      "severity": "ALTO|MÉDIO|BAIXO",
-      "affected_components": ["componentes"],
-      "mitigation": "mitigação"
-    }}
-  ],
-  "recommendations": ["lista de recomendações — use [RAG] nas influenciadas pelo contexto histórico"],
-  "executive_summary": "sumário executivo em até 3 parágrafos",
-  "rag_used": {str(has_rag).lower()}
-}}"""
 
 
 def _parse_json_response(raw: str) -> dict:
@@ -141,14 +86,14 @@ class HuggingFaceAPIClient(ReportModelClient):
             timeout=self._timeout,
         )
 
-        user_message = _build_user_message(extraction_result, risk_result, rag_result)
+        user_message = build_user_message(extraction_result, risk_result, rag_result)
 
         logger.info("finetuned.inference.start", backend="huggingface", endpoint=self._endpoint_url[:60])
 
         try:
             response = client.chat_completion(
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": user_message},
                 ],
                 max_tokens=4096,
@@ -244,9 +189,9 @@ class LocalModelClient(ReportModelClient):
 
         self._load()
 
-        user_message = _build_user_message(extraction_result, risk_result, rag_result)
+        user_message = build_user_message(extraction_result, risk_result, rag_result)
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": user_message},
         ]
 

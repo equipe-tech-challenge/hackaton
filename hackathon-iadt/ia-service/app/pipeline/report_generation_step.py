@@ -148,6 +148,7 @@ Retorne JSON com exatamente estas chaves (TODAS obrigatórias):
 
 def _run_with_finetuned(
     extraction_result: dict,
+    risk_result: dict,
     rag_result: dict | None,
     settings,
 ) -> dict:
@@ -157,7 +158,7 @@ def _run_with_finetuned(
     client = get_report_client(settings)
 
     try:
-        result = client.generate_report(extraction_result, {}, rag_result)
+        result = client.generate_report(extraction_result, risk_result, rag_result)
     except Exception as exc:
         raise ReportGenerationError(
             f"Erro ao gerar relatório via LLM fine-tunado: {exc}",
@@ -171,7 +172,7 @@ def _run_with_finetuned(
 # Interface pública
 # ──────────────────────────────────────────────
 
-def run(extraction_result: dict, rag_result: dict = None) -> dict:
+def run(extraction_result: dict, rag_result: dict = None, risk_result: dict = None) -> dict:
     """
     Gera o relatório técnico estruturado com análise de riscos embutida.
 
@@ -183,6 +184,7 @@ def run(extraction_result: dict, rag_result: dict = None) -> dict:
     Args:
         extraction_result: saída do extraction_agent
         rag_result:        saída do rag_agent (opcional)
+        risk_result:       saída do risk_agent (opcional, usado pelo backend fine-tuned)
 
     Returns:
         dict com components_identified, architectural_risks, recommendations,
@@ -204,7 +206,7 @@ def run(extraction_result: dict, rag_result: dict = None) -> dict:
     if backend == "langchain":
         result = _run_with_langchain(extraction_result, rag_result, settings)
     elif backend in ("finetuned_api", "finetuned_local"):
-        result = _run_with_finetuned(extraction_result, rag_result, settings)
+        result = _run_with_finetuned(extraction_result, risk_result or {}, rag_result, settings)
     else:
         raise ReportGenerationError(
             f"REPORT_MODEL_BACKEND inválido: '{backend}'. "

@@ -22,60 +22,7 @@ import json
 import random
 from pathlib import Path
 
-# System prompt — espelha exatamente o usado em report_agent.py
-_SYSTEM_PROMPT = (
-    "Você é um arquiteto de software sênior gerando relatórios técnicos.\n"
-    "Baseie-se APENAS nos dados fornecidos. Não invente componentes ou riscos.\n"
-    "Use linguagem técnica em português. Retorne APENAS JSON válido."
-)
-
-
-def _build_user_message(extraction: dict, risks: dict, rag_enrichment: str = "") -> str:
-    """Constrói a mensagem do usuário no mesmo formato do report_agent.py."""
-    components = extraction.get("components", [])
-    patterns = extraction.get("patterns", [])
-    risk_list = risks.get("risks", [])
-    severity = risks.get("severity_summary", {"high": 0, "medium": 0, "low": 0})
-
-    rag_section = (
-        f"=== CONTEXTO DE ARQUITETURAS SIMILARES (RAG) ===\n{rag_enrichment}\n"
-        "Identifique com [RAG] as recomendações influenciadas por este contexto histórico."
-        if rag_enrichment
-        else "Sem contexto histórico disponível para esta análise."
-    )
-
-    return f"""Gere um relatório técnico com base nos dados abaixo:
-
-=== COMPONENTES ===
-{json.dumps(components, ensure_ascii=False)}
-
-=== PADRÕES ARQUITETURAIS ===
-{json.dumps(patterns, ensure_ascii=False)}
-
-=== RISCOS IDENTIFICADOS ===
-{json.dumps(risk_list, ensure_ascii=False)}
-
-=== SEVERIDADE ===
-Alto: {severity.get('high', 0)} | Médio: {severity.get('medium', 0)} | Baixo: {severity.get('low', 0)}
-
-{rag_section}
-
-Retorne JSON com exatamente estas chaves:
-{{
-  "components_identified": ["lista de componentes"],
-  "architectural_risks": [
-    {{
-      "type": "tipo",
-      "description": "descrição",
-      "severity": "ALTO|MÉDIO|BAIXO",
-      "affected_components": ["componentes"],
-      "mitigation": "mitigação"
-    }}
-  ],
-  "recommendations": ["lista de recomendações — use [RAG] nas influenciadas pelo contexto histórico"],
-  "executive_summary": "sumário executivo em até 3 parágrafos",
-  "rag_used": false
-}}"""
+from app.infrastructure.llm.finetuning.prompts import SYSTEM_PROMPT, build_user_message
 
 
 def _validate_pair(pair: dict) -> bool:
@@ -99,28 +46,12 @@ def _validate_pair(pair: dict) -> bool:
         return False
 
 
-def format_pairs(
-    input_path: str,
-    output_dir: str,
-    train_split: float = 0.9,
-    seed: int = 42,
-) -> tuple[int, int]:
-    """
-    Lê o JSONL bruto, converte para formato chat e grava train.jsonl e val.jsonl.
-
-    Args:
-        input_path:  Caminho do arquivo raw_pairs.jsonl.
-        output_dir:  Diretório de saída para train.jsonl e val.jsonl.
-        train_split: Fração dos dados para treino (padrão: 0.9).
-        seed:        Seed para shuffle reproduzível.
-
-    Returns:
-        Tupla (n_train, n_val).
-    """
-    raw_pairs: list[dict] = []
+def _load_jsonl(path: str) -> tuple[list[dict], int]:
+    """Carrega e valida pares de um arquivo JSONL. Retorna (pares_válidos, skipped)."""
+    pairs = []
     skipped = 0
 
-    with open(input_path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -128,15 +59,59 @@ def format_pairs(
             try:
                 pair = json.loads(line)
                 if _validate_pair(pair):
-                    raw_pairs.append(pair)
+                    pairs.append(pair)
                 else:
-                    print(f"  [SKIP] Linha {i}: par inválido ou incompleto")
                     skipped += 1
-            except json.JSONDecodeError as exc:
-                print(f"  [SKIP] Linha {i}: JSON inválido — {exc}")
+            except json.JSONDecodeError:
                 skipped += 1
 
-    print(f"Pares carregados: {len(raw_pairs)} válidos, {skipped} ignorados")
+    return pairs, skipped
+
+
+def format_pairs(
+    input_path: str,
+    output_dir: str,
+    train_split: float = 0.9,
+    seed: int = 42,
+    extra_sources: list[str] | None = None,
+) -> tuple[int, int]:
+    """
+    Lê o JSONL bruto, converte para formato chat e grava train.jsonl e val.jsonl.
+
+    Suporta múltiplas fontes de dados: o arquivo principal (sintético) +
+    fontes extras (ex: dataset HuggingFace adaptado via hf_dataset_adapter.py).
+
+    Args:
+        input_path:    Caminho do arquivo raw_pairs.jsonl (sintético).
+        output_dir:    Diretório de saída para train.jsonl e val.jsonl.
+        train_split:   Fração dos dados para treino (padrão: 0.9).
+        seed:          Seed para shuffle reproduzível.
+        extra_sources: Lista de caminhos JSONL extras para combinar.
+
+    Returns:
+        Tupla (n_train, n_val).
+    """
+    raw_pairs: list[dict] = []
+    total_skipped = 0
+
+    # Carregar fonte principal
+    if Path(input_path).exists():
+        pairs, skipped = _load_jsonl(input_path)
+        raw_pairs.extend(pairs)
+        total_skipped += skipped
+        print(f"[sintético] {len(pairs)} válidos, {skipped} ignorados ← {input_path}")
+
+    # Carregar fontes extras (ex: HuggingFace adaptado)
+    for source_path in (extra_sources or []):
+        if Path(source_path).exists():
+            pairs, skipped = _load_jsonl(source_path)
+            raw_pairs.extend(pairs)
+            total_skipped += skipped
+            print(f"[extra]     {len(pairs)} válidos, {skipped} ignorados ← {source_path}")
+        else:
+            print(f"[extra]     AVISO: arquivo não encontrado — {source_path}")
+
+    print(f"\nTotal: {len(raw_pairs)} pares válidos, {total_skipped} ignorados")
 
     random.seed(seed)
     random.shuffle(raw_pairs)
@@ -152,11 +127,12 @@ def format_pairs(
     for path, pairs in [(train_path, train_pairs), (val_path, val_pairs)]:
         with open(path, "w", encoding="utf-8") as f:
             for pair in pairs:
+                rag_result = pair.get("rag_context")
                 example = {
                     "messages": [
-                        {"role": "system",    "content": _SYSTEM_PROMPT},
-                        {"role": "user",      "content": _build_user_message(
-                            pair["extraction"], pair["risks"]
+                        {"role": "system",    "content": SYSTEM_PROMPT},
+                        {"role": "user",      "content": build_user_message(
+                            pair["extraction"], pair["risks"], rag_result
                         )},
                         {"role": "assistant", "content": json.dumps(
                             pair["report"], ensure_ascii=False
@@ -172,10 +148,11 @@ def format_pairs(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Formata dados brutos para fine-tuning")
-    parser.add_argument("--input",  default="./data/raw_pairs.jsonl", help="JSONL bruto de entrada")
+    parser.add_argument("--input",  default="./data/raw_pairs.jsonl", help="JSONL bruto (sintético)")
     parser.add_argument("--output", default="./data",                  help="Diretório de saída")
     parser.add_argument("--split",  type=float, default=0.9,           help="Fração treino")
     parser.add_argument("--seed",   type=int,   default=42,            help="Seed para shuffle")
+    parser.add_argument("--extra",  nargs="*",  default=[],            help="JSONLs extras (ex: HF adaptado)")
     args = parser.parse_args()
 
-    format_pairs(args.input, args.output, args.split, args.seed)
+    format_pairs(args.input, args.output, args.split, args.seed, extra_sources=args.extra)

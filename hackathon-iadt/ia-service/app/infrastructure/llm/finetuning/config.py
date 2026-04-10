@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 
 @dataclass
 class LoRAConfig:
-    r: int = 16                          # rank da decomposição LoRA
-    lora_alpha: int = 32                 # escala (alpha/r = fator de aprendizado)
-    lora_dropout: float = 0.05
+    r: int = 8                           # rank reduzido para evitar overfitting com poucos dados
+    lora_alpha: int = 16                 # escala (alpha/r = 2 mantido)
+    lora_dropout: float = 0.1            # dropout aumentado para regularização
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
     # Camadas alvo — padrão para modelos decoder-only (Mistral, LLaMA, Phi, Qwen)
@@ -44,30 +44,49 @@ class TrainingConfig:
     val_file: str = "./data/val.jsonl"
     max_seq_length: int = 4096
 
-    # Treino
-    num_train_epochs: int = 3
-    per_device_train_batch_size: int = 4
-    gradient_accumulation_steps: int = 4       # batch efetivo = 4 × 4 = 16
-    learning_rate: float = 2e-4
-    warmup_ratio: float = 0.05
+    # Treino — otimizado para convergência
+    num_train_epochs: int = 5
+    per_device_train_batch_size: int = 2       # batch menor = mais steps por epoch
+    gradient_accumulation_steps: int = 2       # batch efetivo = 2 × 2 = 4 (mais updates)
+    learning_rate: float = 5e-5                # LR conservadora para QLoRA em modelo instruction-tuned
+    warmup_ratio: float = 0.1                  # warmup real (>1 step)
+    weight_decay: float = 0.01                 # regularização L2
     lr_scheduler_type: str = "cosine"
     optim: str = "paged_adamw_8bit"            # otimizador eficiente para QLoRA
 
-    # Avaliação e salvamento
-    eval_strategy: str = "epoch"
-    save_strategy: str = "epoch"
+    # Avaliação e salvamento — monitoramento frequente
+    eval_strategy: str = "steps"
+    eval_steps: int = 5
+    save_strategy: str = "steps"
+    save_steps: int = 5
     load_best_model_at_end: bool = True
     metric_for_best_model: str = "eval_loss"
 
-    # Logging
-    logging_steps: int = 10
-    report_to: str = "none"                    # "wandb" se quiser tracking
+    # Logging — visibilidade total da convergência
+    logging_steps: int = 1
+    logging_first_step: bool = True
+    report_to: str = "tensorboard"
+    logging_dir: str = "./output/logs"
 
 
 @dataclass
 class DataGenerationConfig:
-    num_synthetic_samples: int = 50
-    architecture_templates: list = field(default_factory=lambda: [
+    num_synthetic_samples: int = 500
+    train_split: float = 0.9                   # 90% treino, 10% validação
+    output_dir: str = "./data"
+    rag_sample_ratio: float = 0.3              # 30% das amostras incluem contexto RAG sintético
+
+    # Templates organizados por tier de complexidade (curriculum learning)
+    tier_1_simple: list = field(default_factory=lambda: [
+        # 5-7 componentes, 1-2 categorias de risco
+        "static_website_cdn",
+        "simple_crud_api",
+        "single_container_app",
+        "basic_queue_worker",
+        "wordpress_lamp",
+    ])
+    tier_2_intermediate: list = field(default_factory=lambda: [
+        # 8-12 componentes, 3-4 categorias de risco
         "microservices_api_gateway",
         "monolith_single_db",
         "event_driven_kafka",
@@ -78,7 +97,51 @@ class DataGenerationConfig:
         "data_pipeline_etl",
         "hexagonal_clean_arch",
         "multi_region_failover",
+        "saga_pattern_distributed",
+        "api_composition_gateway",
+        "strangler_fig_migration",
+        "blue_green_deployment",
+        "feature_flag_service",
     ])
-    variations_per_template: int = 5           # total: 10 templates × 5 = 50 pares
-    train_split: float = 0.9                   # 90% treino, 10% validação
-    output_dir: str = "./data"
+    tier_3_complex: list = field(default_factory=lambda: [
+        # 12-20 componentes, 5-6 categorias de risco
+        "multi_cloud_hybrid",
+        "streaming_platform_kafka_flink",
+        "ml_inference_pipeline",
+        "zero_trust_network",
+        "event_mesh_choreography",
+        "polyglot_persistence",
+        "global_edge_computing",
+    ])
+    tier_4_expert: list = field(default_factory=lambda: [
+        # 20+ componentes, todas as 6 categorias, com RAG
+        "banking_core_modernization",
+        "healthcare_hipaa_platform",
+        "autonomous_vehicle_platform",
+    ])
+
+    # Variações por tier
+    variations_tier_1: int = 20
+    variations_tier_2: int = 15
+    variations_tier_3: int = 10
+    variations_tier_4: int = 10
+
+    @property
+    def all_templates(self) -> list:
+        return self.tier_1_simple + self.tier_2_intermediate + self.tier_3_complex + self.tier_4_expert
+
+    def get_tier(self, template: str) -> int:
+        if template in self.tier_1_simple:
+            return 1
+        if template in self.tier_2_intermediate:
+            return 2
+        if template in self.tier_3_complex:
+            return 3
+        if template in self.tier_4_expert:
+            return 4
+        return 2  # default
+
+    def get_variations(self, template: str) -> int:
+        tier = self.get_tier(template)
+        return {1: self.variations_tier_1, 2: self.variations_tier_2,
+                3: self.variations_tier_3, 4: self.variations_tier_4}[tier]

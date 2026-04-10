@@ -24,7 +24,9 @@
       "Bash(sed -i 's/AnalysisFailed\\(/AnalysisFailedEvent\\(/g' app/domain/diagram_analysis/analysis.py)",
       "Bash(docker --version)",
       "Bash(python3 -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
-      "Bash(python docs/generate_architecture.py)"
+      "Bash(python docs/generate_architecture.py)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:owasp.org)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"
