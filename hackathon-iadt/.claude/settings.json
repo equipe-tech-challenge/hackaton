@@ -26,7 +26,9 @@
       "Bash(python3 -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
       "Bash(python docs/generate_architecture.py)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:owasp.org)"
+      "WebFetch(domain:owasp.org)",
+      "Bash(python -c \"import reportlab; print\\('reportlab:', reportlab.__version__\\)\")",
+      "Bash(python generate_pdf.py)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"
