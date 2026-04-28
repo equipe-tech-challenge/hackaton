@@ -28,7 +28,12 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:owasp.org)",
       "Bash(python -c \"import reportlab; print\\('reportlab:', reportlab.__version__\\)\")",
-      "Bash(python generate_pdf.py)"
+      "Bash(python generate_pdf.py)",
+      "Bash(docker network *)",
+      "Bash(docker rm *)",
+      "Bash(python -c \"import pickletools,marshal,dis,importlib.util,sys; spec=importlib.util.spec_from_file_location\\('p','ia-service/app/infrastructure/messaging/__pycache__/rabbitmq_publisher.cpython-313.pyc'\\)\")",
+      "Bash(git ls-tree *)",
+      "Bash(curl -s http://localhost:8000/health)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"

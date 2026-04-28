@@ -14,6 +14,24 @@ services:
       timeout: 5s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: hackathon_rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-hackathon}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-hackathon123}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
   pgvector:
     image: pgvector/pgvector:pg16
     container_name: hackathon_pgvector
@@ -69,10 +87,15 @@ services:
       BASE_MODEL_ID: ${BASE_MODEL_ID:-}
       # Redis
       REDIS_URL: redis://redis:6379/0
+      # RabbitMQ
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-hackathon}:${RABBITMQ_PASSWORD:-hackathon123}@rabbitmq:5672/
+      RABBITMQ_EXCHANGE: reports.events
     depends_on:
       pgvector:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   streamlit-app:
@@ -122,10 +145,14 @@ services:
       LOCAL_MODEL_PATH: ${LOCAL_MODEL_PATH:-}
       BASE_MODEL_ID: ${BASE_MODEL_ID:-}
       REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-hackathon}:${RABBITMQ_PASSWORD:-hackathon123}@rabbitmq:5672/
+      RABBITMQ_EXCHANGE: reports.events
     depends_on:
       redis:
         condition: service_healthy
       pgvector:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   report-api:
@@ -149,4 +176,6 @@ services:
 
 volumes:
   pgvector_data:
+    driver: local
+  rabbitmq_data:
     driver: local

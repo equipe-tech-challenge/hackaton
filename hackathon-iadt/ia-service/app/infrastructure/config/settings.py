@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
+    # RabbitMQ
+    rabbitmq_url: str = "amqp://hackathon:hackathon123@rabbitmq:5672/"
+    rabbitmq_exchange: str = "reports.events"
+    outbox_poll_interval_seconds: int = 2
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

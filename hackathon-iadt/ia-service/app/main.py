@@ -3,7 +3,8 @@ import json
 import queue
 import threading
 import traceback
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query
+from typing import Any, Optional
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -39,10 +40,18 @@ def _start_sqs_consumer():
     logger.info("sqs.consumer.thread_started")
 
 
+def _start_rabbitmq_consumer():
+    """Consumer RabbitMQ para receber arquivos via webhook de teste."""
+    from app.infrastructure.messaging.rabbitmq_consumer import start as rabbit_start
+
+    rabbit_start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("ia_service.startup")
     _start_sqs_consumer()
+    _start_rabbitmq_consumer()
     yield
     logger.info("ia_service.shutdown")
 
@@ -323,3 +332,98 @@ async def job_status(job_id: str):
         "last_event": last,
         "total_events": len(events_raw),
     }
+
+
+# ── Test endpoint: upload + publish to RabbitMQ ─────────────────────
+
+
+def _publish_to_rabbitmq(payload: Any, routing_key: str, exchange: Optional[str]) -> dict:
+    import pika
+
+    settings = get_settings()
+    rabbit_url = getattr(settings, "rabbitmq_url", None) or "amqp://hackathon:hackathon123@rabbitmq:5672/"
+    target_exchange = exchange or getattr(settings, "rabbitmq_exchange", "reports.events")
+
+    try:
+        params = pika.URLParameters(rabbit_url)
+        connection = pika.BlockingConnection(params)
+        channel = connection.channel()
+        channel.exchange_declare(exchange=target_exchange, exchange_type="topic", durable=True)
+
+        body_bytes = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        channel.basic_publish(
+            exchange=target_exchange,
+            routing_key=routing_key,
+            body=body_bytes,
+            properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
+        )
+        connection.close()
+    except Exception as exc:
+        logger.error("test.rabbitmq.publish_error", error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Falha ao publicar no RabbitMQ: {exc}")
+
+    logger.info(
+        "test.rabbitmq.published",
+        exchange=target_exchange,
+        routing_key=routing_key,
+        size=len(body_bytes),
+    )
+    return {
+        "ok": True,
+        "exchange": target_exchange,
+        "routing_key": routing_key,
+        "bytes": len(body_bytes),
+    }
+
+
+@app.post("/test/rabbitmq/upload", status_code=202)
+async def test_upload_to_rabbitmq(
+    file: UploadFile = File(..., description="Diagrama (png/jpg/jpeg/gif/webp/pdf)"),
+    routing_key: str = Query("diagram.uploaded", description="Routing key da mensagem"),
+    exchange: Optional[str] = Query(None, description="Exchange (default: settings.rabbitmq_exchange)"),
+):
+    """
+    Simula um webhook: recebe um arquivo, gera um `job_id`, publica no RabbitMQ
+    e retorna imediatamente. O consumer publica eventos de progresso em Redis
+    no canal `job:{job_id}`.
+
+    Acompanhe o progresso via:
+      - SSE:     GET /jobs/{job_id}/events
+      - Polling: GET /jobs/{job_id}/status
+    """
+    import base64
+    import uuid
+
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tipo de arquivo não suportado: .{ext}. Aceitos: {', '.join(SUPPORTED_EXTENSIONS)}",
+        )
+
+    file_bytes = await file.read()
+    job_id = str(uuid.uuid4())
+    payload: Any = {
+        "job_id": job_id,
+        "file_name": file.filename,
+        "content_type": file.content_type,
+        "file_b64": base64.b64encode(file_bytes).decode("ascii"),
+    }
+    publish_result = _publish_to_rabbitmq(payload, routing_key, exchange)
+
+    return {
+        "job_id": job_id,
+        "status": "recebido",
+        "exchange": publish_result["exchange"],
+        "routing_key": publish_result["routing_key"],
+    }
+
+
+@app.post("/test/rabbitmq/publish", status_code=200)
+def test_publish_rabbitmq(
+    payload: Any = Body(..., description="JSON arbitrário a ser publicado no exchange"),
+    routing_key: str = Query("report.created", description="Routing key da mensagem"),
+    exchange: Optional[str] = Query(None, description="Exchange (default: settings.rabbitmq_exchange)"),
+):
+    """Publica uma mensagem JSON arbitrária no exchange RabbitMQ."""
+    return _publish_to_rabbitmq(payload, routing_key, exchange)
