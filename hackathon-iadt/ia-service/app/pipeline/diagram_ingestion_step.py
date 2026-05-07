@@ -15,9 +15,7 @@ SUPPORTED_TYPES = {
     "image/png":  "png",
     "image/jpeg": "jpeg",
     "image/jpg":  "jpeg",
-    "image/gif":  "gif",
-    "image/webp": "webp",
-    "application/pdf": "pdf",
+    "application/pdf": "pdf"
 }
 MAX_SIZE_MB = 20
 MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024

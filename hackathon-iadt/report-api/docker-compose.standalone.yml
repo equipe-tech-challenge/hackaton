@@ -1,0 +1,50 @@
+version: "3.9"
+
+# Compose standalone do report-api.
+# Sobe: pgvector (DB) + report-api.
+# Uso: cd report-api && docker compose up
+
+services:
+
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: report_pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hackathon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hackathon123}
+      POSTGRES_DB: ${POSTGRES_DB:-hackathon_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - report_pgvector_data:/var/lib/postgresql/data
+      - ./infrastructure/database/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hackathon} -d ${POSTGRES_DB:-hackathon_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  report-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: report_api
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hackathon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hackathon123}
+      POSTGRES_DB: ${POSTGRES_DB:-hackathon_db}
+      POSTGRES_HOST: pgvector
+      POSTGRES_PORT: 5432
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      pgvector:
+        condition: service_healthy
+
+volumes:
+  report_pgvector_data:
+    driver: local
