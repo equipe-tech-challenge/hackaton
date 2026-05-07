@@ -48,7 +48,12 @@
       "Bash(Get-ChildItem -Path . -Force)",
       "Bash(Select-Object -Property Name, PSIsContainer)",
       "Bash(Format-Table -AutoSize)",
-      "Bash(python -m pytest tests/test_domain_shared.py tests/test_domain_diagram_analysis.py tests/test_domain_report_generation.py -v)"
+      "Bash(python -m pytest tests/test_domain_shared.py tests/test_domain_diagram_analysis.py tests/test_domain_report_generation.py -v)",
+      "Bash(python -m pytest --collect-only)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\GabrielSantana\\\\Documents\\\\Hackaton\\\\hackaton\\\\hackathon-iadt\" -Force)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\GabrielSantana\\\\Documents\\\\Hackaton\\\\hackaton\\\\hackathon-iadt\\\\ia-service\" -Recurse -Force -Exclude @\\(\"node_modules\",\".next\",\"dist\"\\) | Where-Object {$_.Extension -match \"\\\\.\\(ts|tsx|js|jsx|json|env|yml|yaml|py\\)$\"} | Select-Object -ExpandProperty FullName | Sort-Object)",
+      "Bash(Get-Content \"C:\\\\Users\\\\GABRIE~2\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-GabrielSantana-Documents-Hackaton-hackaton-hackathon-iadt\\\\eb11f132-b6d9-40e7-8075-35ded5a7429c\\\\tasks\\\\bvh63rl1u.output\" -Wait)",
+      "Bash(Select-String -Pattern \"error|ERROR|warning|WARNING|Step|STEP|Successfully|successfully|=>|FINISHED|failed|FAILED\" --SimpleMatch)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"
