@@ -5,10 +5,16 @@ Dispara o pipeline de análise e envia o resultado via webhook.
 
 Formato esperado da mensagem SQS:
 {
-  "file_name":    "diagrama.png",
-  "s3_url":       "https://...",     <- URL pré-assinada do S3
-  "callback_url": "https://..."      <- Endpoint SOAT para receber o resultado
+  "file_name":        "diagrama.png",
+  "s3_url":           "https://...",     <- URL pré-assinada do S3
+  "callback_url":     "https://...",     <- Endpoint SOAT para receber o resultado final
+  "soat_analysis_id": "uuid-soat"        <- ID da análise no sistema SOAT
 }
+
+Fluxo de integração com SOAT:
+  1. Ao iniciar o processamento → PUT {SOAT_BASE_URL}/analyses/{soat_analysis_id}/status
+     com body {"status": "em_processamento"}
+  2. Ao finalizar → POST callback_url devolvendo soat_analysis_id + relatório
 
 Melhorias implementadas (Workstream 2):
   - Graceful shutdown via SIGTERM/SIGINT
@@ -38,6 +44,7 @@ from app.infrastructure.persistence.sqlalchemy_analysis_repository import SQLAlc
 from app.pipeline.analysis_orchestrator import run_pipeline
 from app.shared.logging import get_logger
 from app.infrastructure.http.webhook_sender import send_webhook
+from app.infrastructure.http.soat_client import update_analysis_status
 
 logger = get_logger(__name__)
 
@@ -112,6 +119,7 @@ def _process_message(body: dict, sqs_message_id: str) -> None:
     s3_url = body.get("s3_url")
     file_name = body.get("file_name", "diagrama.png")
     callback_url = body.get("callback_url")
+    soat_analysis_id = body.get("soat_analysis_id", "")
 
     try:
         if not s3_url:
@@ -130,7 +138,15 @@ def _process_message(body: dict, sqs_message_id: str) -> None:
             )
             return
 
-        logger.info("sqs.processing", file_name=file_name, s3_url=s3_url[:60])
+        logger.info(
+            "sqs.processing",
+            file_name=file_name,
+            s3_url=s3_url[:60],
+            soat_analysis_id=soat_analysis_id or "n/a",
+        )
+
+        # ── Notifica SOAT: início do processamento ────────────────────
+        update_analysis_status(soat_analysis_id, "em_processamento")
 
         # ── Download ─────────────────────────────────────────────────
         file_bytes = _download_file(s3_url)
@@ -148,27 +164,34 @@ def _process_message(body: dict, sqs_message_id: str) -> None:
             "sqs.pipeline_completed",
             analysis_id=result["analysis_id"],
             status=result["status"],
+            soat_analysis_id=soat_analysis_id or "n/a",
         )
 
-        # ── Webhook de sucesso ────────────────────────────────────────
+        # ── Callback de sucesso para SOAT ─────────────────────────────
         send_webhook(
             callback_url=callback_url,
             analysis_id=result["analysis_id"],
             status=result["status"],
             report=result.get("report"),
+            soat_analysis_id=soat_analysis_id,
         )
 
     except Exception as exc:
-        logger.error("sqs.pipeline_error", error=str(exc), file_name=file_name)
+        logger.error(
+            "sqs.pipeline_error",
+            error=str(exc),
+            file_name=file_name,
+            soat_analysis_id=soat_analysis_id or "n/a",
+        )
 
-        # ── Webhook de erro ───────────────────────────────────────────
-        # Mesmo em caso de falha, tentamos notificar o SOAT.
+        # ── Callback de erro para SOAT ────────────────────────────────
         # analysis_id pode não existir se a falha foi antes do create_analysis.
         send_webhook(
             callback_url=callback_url,
             analysis_id=body.get("analysis_id", "unknown"),
             status="erro",
             error_message=str(exc),
+            soat_analysis_id=soat_analysis_id,
         )
 
         raise  # Re-lança para que a mensagem volte à fila após VisibilityTimeout

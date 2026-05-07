@@ -81,6 +81,7 @@ def send_webhook(
     status: str,
     report: dict | None = None,
     error_message: str | None = None,
+    soat_analysis_id: str = "",
 ) -> bool:
     """
     Envia o resultado da análise para callback_url via POST.
@@ -89,11 +90,12 @@ def send_webhook(
     Falha no webhook NÃO impede o delete da mensagem SQS.
 
     Args:
-        callback_url:  URL de destino (vem da mensagem SQS). Se None/vazio, no-op.
-        analysis_id:   ID da análise processada.
-        status:        "analisado" | "erro"
-        report:        Relatório completo (quando status = "analisado").
-        error_message: Mensagem de erro (quando status = "erro").
+        callback_url:      URL de destino (vem da mensagem SQS). Se None/vazio, no-op.
+        analysis_id:       ID interno da análise processada.
+        status:            "analisado" | "erro"
+        report:            Relatório completo (quando status = "analisado").
+        error_message:     Mensagem de erro (quando status = "erro").
+        soat_analysis_id:  ID da análise no sistema SOAT (devolvido no payload).
 
     Returns:
         True se o webhook foi entregue com sucesso, False caso contrário.
@@ -104,6 +106,7 @@ def send_webhook(
 
     payload = {
         "analysis_id": analysis_id,
+        "soat_analysis_id": soat_analysis_id or None,
         "status": status,
         "report": report,
         "error_message": error_message,

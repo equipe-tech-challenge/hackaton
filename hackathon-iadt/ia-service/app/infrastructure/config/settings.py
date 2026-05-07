@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # SQS
     sqs_queue_url: str = ""
 
+    # SOAT — sistema externo que origina as análises
+    soat_base_url: str = ""
+
     # Report Agent — backend de geração de relatório
     # Valores: "langchain" | "finetuned_api" | "finetuned_local"
     report_model_backend: str = "langchain"
