@@ -44,7 +44,11 @@
       "Bash(rmdir \"c:\\\\Users\\\\GabrielSantana\\\\Documents\\\\Hackaton\\\\hackaton\\\\hackathon-iadt\\\\pgvector\")",
       "Bash(cp infrastructure/database/init/* ia-service/infrastructure/database/init/)",
       "Bash(cp infrastructure/database/init/* report-api/infrastructure/database/init/)",
-      "Bash(curl -s http://localhost:8001/health)"
+      "Bash(curl -s http://localhost:8001/health)",
+      "Bash(Get-ChildItem -Path . -Force)",
+      "Bash(Select-Object -Property Name, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(python -m pytest tests/test_domain_shared.py tests/test_domain_diagram_analysis.py tests/test_domain_report_generation.py -v)"
     ],
     "additionalDirectories": [
       "c:\\Users\\GabrielSantana\\Documents\\Hackaton\\hackaton\\hackathon-iadt\\tests\\e2e"
